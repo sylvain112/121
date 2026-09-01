@@ -1,0 +1,6 @@
+{
+  "name": "zhfr-v8-stable",
+  "version": "8.0.0",
+  "private": true,
+  "type": "module"
+}
