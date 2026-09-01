@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#080b11">
+<meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate">
+<title>中法同传 v8</title>
+<style>
+:root{color-scheme:dark;--bg:#080b11;--panel:#111722;--panel2:#171f2c;--line:#283448;--text:#f7f8fb;--muted:#8e99aa;--blue:#5f8fff;--green:#2bd59c;--amber:#f1bc4b;--red:#ff6b7e;--violet:#9875ff}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text)}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC","Helvetica Neue",Arial,sans-serif;background:radial-gradient(circle at 12% -8%,rgba(95,143,255,.18),transparent 32rem),radial-gradient(circle at 105% 18%,rgba(43,213,156,.08),transparent 28rem),var(--bg)}
+button,input,textarea{font:inherit}button{cursor:pointer;touch-action:manipulation}
+.app{width:min(100%,760px);margin:auto;padding:calc(18px + env(safe-area-inset-top)) 13px calc(28px + env(safe-area-inset-bottom))}
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:2px 2px 15px}
+.eyebrow{font-size:10px;font-weight:800;letter-spacing:.16em;color:#71809a}
+h1{font-size:27px;margin:4px 0 0;letter-spacing:-.04em} h2,h3{margin:4px 0 0}
+.status{display:flex;align-items:center;gap:7px;border:1px solid var(--line);background:rgba(17,23,34,.82);padding:8px 11px;border-radius:999px;color:var(--muted);font-size:12px}
+.dot{width:8px;height:8px;border-radius:50%;background:#596576}.status.online .dot{background:var(--green);box-shadow:0 0 15px rgba(43,213,156,.6)}.status.busy .dot{background:var(--amber);box-shadow:0 0 15px rgba(241,188,75,.5)}
+.card{background:rgba(17,23,34,.86);border:1px solid rgba(255,255,255,.065);border-radius:21px;padding:15px;box-shadow:0 20px 60px rgba(0,0,0,.28);backdrop-filter:blur(16px);margin-bottom:13px}
+.card label{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}.card input,.dialog textarea{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:13px;color:var(--text);padding:12px 13px;outline:none}
+.switchrow{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.06)}
+.switchrow strong{font-size:14px;display:block}.switchrow small{font-size:11px;color:var(--muted)}
+.switch{position:relative;width:48px;height:29px;flex:0 0 auto}.switch input{display:none}.slider{position:absolute;inset:0;border-radius:99px;background:#364151;transition:.2s}.slider:before{content:"";position:absolute;width:23px;height:23px;left:3px;top:3px;border-radius:50%;background:white;transition:.2s}.switch input:checked+.slider{background:var(--blue)}.switch input:checked+.slider:before{transform:translateX(19px)}
+.hero{display:flex;flex-direction:column;align-items:center;padding:26px 0 18px}.talk{width:188px;height:188px;border-radius:50%;border:0;color:#fff;position:relative;background:radial-gradient(circle at 38% 30%,#7ca3ff,#527ff2 40%,#3159d2 78%,#2446aa);box-shadow:0 22px 70px rgba(69,108,238,.36),inset 0 1px 0 rgba(255,255,255,.35);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px}.talk.active{background:radial-gradient(circle at 38% 30%,#77f0c8,#2bd59c 40%,#189a78 80%,#11725b);box-shadow:0 22px 75px rgba(43,213,156,.28)}.talk .mic{font-size:32px}.talk strong{font-size:20px}.talk small{font-size:11px;opacity:.82}.ring{position:absolute;inset:-14px;border-radius:50%;border:1px solid rgba(95,143,255,.20);pointer-events:none}.talk.active .ring{border-color:rgba(43,213,156,.25);animation:ring 1.9s infinite}@keyframes ring{0%{transform:scale(.94);opacity:.9}75%{transform:scale(1.1);opacity:0}100%{opacity:0}}
+.note{margin:22px 0 0;color:var(--muted);font-size:12px}
+.meterWrap{width:min(360px,82vw);height:7px;background:#1a2331;border-radius:99px;overflow:hidden;margin-top:13px;border:1px solid #273244}.meter{height:100%;width:0;background:linear-gradient(90deg,#5f8fff,#2bd59c);transition:width .06s linear}
+.live{display:flex;align-items:center;gap:8px;min-height:46px}.badge{font-size:9px;font-weight:900;letter-spacing:.14em;color:#ff91a0;background:rgba(255,107,126,.1);border:1px solid rgba(255,107,126,.25);padding:5px 7px;border-radius:7px}.liveText{font-size:13px;color:#cbd3de;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sectionhead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}.sectionhead h2{font-size:19px}.mini{border:1px solid var(--line);background:var(--panel2);color:#b8c2cf;border-radius:10px;padding:8px 10px;font-size:11px}
+.messages{min-height:235px;max-height:45vh;overflow:auto;scroll-behavior:smooth}.empty{min-height:220px;display:grid;place-items:center;text-align:center;color:var(--muted);font-size:13px;line-height:1.7}
+.msg{padding:13px 14px;margin:9px 0;border:1px solid var(--line);background:var(--panel2);border-radius:15px}.msg.zh{border-left:3px solid var(--blue)}.msg.fr{border-left:3px solid var(--green)}.msgtop{display:flex;justify-content:space-between;gap:8px;font-size:11px;margin-bottom:7px}.dir{font-weight:800}.time{color:#657287}.original{font-size:13px;color:#929eaf;line-height:1.45;margin-bottom:6px}.translation{font-size:17px;line-height:1.5;font-weight:650}
+.processing{margin-top:9px;padding:10px 12px;border:1px dashed #3a4658;border-radius:13px;color:#c3ccd8;font-size:13px}
+.tools{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:13px}.tool{min-height:66px;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:17px;display:flex;align-items:center;gap:10px;text-align:left;padding:12px}.tool span{display:grid;place-items:center;width:37px;height:37px;border-radius:11px;background:#1d2634;font-size:18px}.tool.ai span{background:rgba(152,117,255,.14);color:#bba6ff}.tool strong{display:block;font-size:14px}.tool small{display:block;font-size:10px;color:var(--muted);margin-top:3px}
+.summary{white-space:pre-wrap;font-size:14px;line-height:1.75}.bottom{display:flex;justify-content:center}.clear{border:1px solid var(--line);background:transparent;color:#778397;border-radius:10px;padding:8px 11px;font-size:11px}footer{text-align:center;color:#536073;font-size:10px;padding:14px 0 2px}
+dialog{width:min(92vw,600px);padding:0;border:0;background:transparent}dialog::backdrop{background:rgba(0,0,0,.72);backdrop-filter:blur(5px)}.dialog{background:#101722;border:1px solid var(--line);border-radius:21px;padding:16px;color:var(--text)}.dialoghead{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.close{border:1px solid var(--line);background:var(--panel2);color:#b8c1ce;border-radius:10px;width:35px;height:35px;font-size:21px}.dialog p{color:var(--muted);font-size:12px;line-height:1.6}.dialog textarea{min-height:112px;resize:vertical}.primary{width:100%;margin-top:9px;border:0;border-radius:12px;padding:12px;background:linear-gradient(135deg,#7756ed,#a078ff);color:white;font-weight:700}.answer{white-space:pre-wrap;line-height:1.65;font-size:14px;margin-top:11px;padding:12px;border-radius:13px;border:1px solid rgba(152,117,255,.27);background:rgba(152,117,255,.07)}
+@media(max-width:520px){.talk{width:176px;height:176px}.tools{grid-template-columns:1fr}.messages{max-height:42vh}}
+</style>
+</head>
+<body>
+<main class="app">
+<header class="top"><div><div class="eyebrow">ZH ⇄ FR · STABLE TURN v8</div><h1>中法同传</h1></div><div class="status" id="status"><span class="dot"></span><span id="statusText">未连接</span></div></header>
+<section class="card">
+<label for="topic">本次谈话主题</label><input id="topic" placeholder="例如：学校迎新 / 房屋维修 / 保险理赔">
+<div class="switchrow"><div><strong>语音朗读译文</strong><small>使用手机自带语音，不额外消耗 API 语音费用</small></div><label class="switch"><input id="voiceToggle" type="checkbox"><span class="slider"></span></label></div>
+</section>
+<section class="hero">
+<button class="talk" id="talkButton"><span class="ring"></span><span class="mic">🎙</span><strong id="talkLabel">开始同传</strong><small>自动识别中文 / Français</small></button>
+<div class="meterWrap"><div class="meter" id="meter"></div></div>
+<p class="note">双方直接轮流讲话 · 停顿约 0.7 秒后自动翻译</p>
+</section>
+<section class="card live"><span class="badge">LIVE</span><span class="liveText" id="liveText">等待开始</span></section>
+<section class="card">
+<div class="sectionhead"><div><div class="eyebrow">TRANSCRIPT</div><h2>实时对话</h2></div><button class="mini" id="copyBtn">复制</button></div>
+<div class="messages" id="messages"><div class="empty" id="empty">开始后把手机放在双方之间。<br>系统先识别语言，再严格翻译到另一种语言。</div></div>
+<div class="processing" id="processing" hidden>正在识别和翻译第 <span id="processingCount">1</span> 句话…</div>
+</section>
+<section class="tools"><button class="tool ai" id="agentBtn"><span>✦</span><div><strong>AI 介入</strong><small>理解上下文 / 帮你追问</small></div></button><button class="tool" id="summaryBtn"><span>▤</span><div><strong>结束并总结</strong><small>重点 / 待办 / 时间金额</small></div></button></section>
+<section class="card" id="summaryCard" hidden><div class="sectionhead"><div><div class="eyebrow">SUMMARY</div><h2>谈话总结</h2></div><button class="mini" id="copySummary">复制</button></div><div class="summary" id="summaryText"></div></section>
+<div class="bottom"><button class="clear" id="clearBtn">清空本次记录</button></div>
+<footer>GPT‑Transcribe 语言检测 + GPT‑5.6 Luna 翻译 · API Key 仅保存在 Vercel</footer>
+</main>
+
+<dialog id="agentDialog"><div class="dialog"><div class="dialoghead"><div><div class="eyebrow">SIDE AI</div><h3>让 AI 临时介入</h3></div><button class="close" id="agentClose">×</button></div><p>AI 会读取已经完成的对话记录，但回答不会混入正常同传。</p><textarea id="agentInput" placeholder="例如：帮我用法语问他，维修什么时候开始？"></textarea><button class="primary" id="agentSend">发送</button><div class="answer" id="agentAnswer" hidden></div></div></dialog>
+
+<script>
+const $=s=>document.querySelector(s);
+const state={
+ active:false,stream:null,audioCtx:null,analyser:null,sourceNode:null,raf:0,
+ recorder:null,chunks:[],cycleStarted:0,speaking:false,aboveSince:0,silenceSince:0,ending:false,
+ noiseFloor:.008,suppressVad:false,processing:0,chain:Promise.resolve(),
+ messages:JSON.parse(localStorage.getItem("zhfr.v8.messages")||"[]")
+};
+const el={status:$("#status"),statusText:$("#statusText"),topic:$("#topic"),voice:$("#voiceToggle"),talk:$("#talkButton"),talkLabel:$("#talkLabel"),meter:$("#meter"),live:$("#liveText"),messages:$("#messages"),empty:$("#empty"),processing:$("#processing"),processingCount:$("#processingCount"),summaryCard:$("#summaryCard"),summaryText:$("#summaryText"),agentDialog:$("#agentDialog"),agentInput:$("#agentInput"),agentAnswer:$("#agentAnswer")};
+el.topic.value=localStorage.getItem("zhfr.v8.topic")||"";
+el.voice.checked=localStorage.getItem("zhfr.v8.voice")==="1";
+el.topic.oninput=()=>localStorage.setItem("zhfr.v8.topic",el.topic.value);
+el.voice.onchange=()=>localStorage.setItem("zhfr.v8.voice",el.voice.checked?"1":"0");
+
+function status(t,m=""){el.statusText.textContent=t;el.status.classList.remove("online","busy");if(m)el.status.classList.add(m)}
+function live(t){el.live.textContent=t}
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function now(){return new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
+function save(){localStorage.setItem("zhfr.v8.messages",JSON.stringify(state.messages))}
+function render(){
+ el.messages.innerHTML="";
+ if(!state.messages.length){el.messages.appendChild(el.empty);el.empty.hidden=false}
+ else state.messages.forEach(m=>{const d=document.createElement("div");d.className=`msg ${m.sourceLang}`;const dir=m.sourceLang==="zh"?"🇨🇳 中文 → 🇫🇷 Français":"🇫🇷 Français → 🇨🇳 中文";d.innerHTML=`<div class="msgtop"><span class="dir">${dir}</span><span class="time">${esc(m.time)}</span></div><div class="original">${esc(m.original)}</div><div class="translation">${esc(m.translation)}</div>`;el.messages.appendChild(d)});
+ el.messages.scrollTop=el.messages.scrollHeight
+}
+function chooseMime(){
+ const candidates=["audio/mp4;codecs=mp4a.40.2","audio/mp4","audio/webm;codecs=opus","audio/webm"];
+ for(const m of candidates)if(window.MediaRecorder?.isTypeSupported?.(m))return m;
+ return "";
+}
+function beginCycle(){
+ if(!state.active||state.ending)return;
+ const mime=chooseMime();
+ try{state.recorder=new MediaRecorder(state.stream,mime?{mimeType:mime}:undefined)}catch{state.recorder=new MediaRecorder(state.stream)}
+ state.chunks=[];state.cycleStarted=Date.now();state.speaking=false;state.aboveSince=0;state.silenceSince=0;
+ state.recorder.ondataavailable=e=>{if(e.data?.size)state.chunks.push(e.data)};
+ state.recorder.start(250);
+}
+function endCycle(discard=false){
+ if(state.ending||!state.recorder||state.recorder.state==="inactive")return;
+ state.ending=true;
+ const rec=state.recorder;
+ rec.onstop=()=>{
+   const chunks=state.chunks.slice();
+   const type=rec.mimeType||chooseMime()||"audio/webm";
+   state.ending=false;
+   if(state.active)beginCycle();
+   if(!discard&&chunks.length){
+     const blob=new Blob(chunks,{type});
+     if(blob.size>1500){
+       state.processing++;
+       updateProcessing();
+       state.chain=state.chain.then(()=>processTurn(blob)).catch(err=>{console.error(err);live(`识别失败：${err.message}`)}).finally(()=>{state.processing--;updateProcessing()});
+     }
+   }
+ };
+ try{rec.stop()}catch{state.ending=false}
+}
+function updateProcessing(){
+ el.processing.hidden=state.processing===0;
+ el.processingCount.textContent=String(Math.max(1,state.processing));
+}
+function restartIdleCycle(){
+ if(state.speaking||state.ending)return;
+ endCycle(true);
+}
+async function blobToBase64(blob){
+ const buf=new Uint8Array(await blob.arrayBuffer());
+ let binary="";const step=0x8000;
+ for(let i=0;i<buf.length;i+=step)binary+=String.fromCharCode(...buf.subarray(i,i+step));
+ return btoa(binary);
+}
+async function processTurn(blob){
+ live("正在识别语言和原文…");
+ const audio=await blobToBase64(blob);
+ const r=await fetch("/api/turn",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({audio,mimeType:blob.type,topic:el.topic.value.trim()})});
+ const data=await r.json();if(!r.ok)throw new Error(data.error||"识别/翻译失败");
+ if(!data.original?.trim())return;
+ const m={sourceLang:data.sourceLang,original:data.original.trim(),translation:data.translation.trim(),time:now()};
+ state.messages.push(m);save();render();live("继续讲话即可");status("同传中","online");
+ if(el.voice.checked&&m.translation)speak(m.translation,m.sourceLang==="zh"?"fr-FR":"zh-CN");
+}
+function speak(text,lang){
+ if(!("speechSynthesis"in window))return;
+ speechSynthesis.cancel();
+ state.suppressVad=true;
+ if(state.stream)state.stream.getAudioTracks().forEach(t=>t.enabled=false);
+ const u=new SpeechSynthesisUtterance(text);u.lang=lang;u.rate=1;
+ const done=()=>{if(state.stream)state.stream.getAudioTracks().forEach(t=>t.enabled=true);state.suppressVad=false;live("继续讲话即可")};
+ u.onend=done;u.onerror=done;speechSynthesis.speak(u)
+}
+function vadLoop(){
+ if(!state.active||!state.analyser)return;
+ const arr=new Float32Array(state.analyser.fftSize);state.analyser.getFloatTimeDomainData(arr);
+ let sum=0;for(const x of arr)sum+=x*x;const rms=Math.sqrt(sum/arr.length);
+ el.meter.style.width=`${Math.min(100,rms*900)}%`;
+ if(!state.suppressVad){
+   if(!state.speaking&&rms<.04)state.noiseFloor=.985*state.noiseFloor+.015*rms;
+   const threshold=Math.max(.012,state.noiseFloor*2.8);
+   const t=performance.now();
+   if(rms>threshold){
+     state.silenceSince=0;
+     if(!state.aboveSince)state.aboveSince=t;
+     if(!state.speaking&&t-state.aboveSince>110){state.speaking=true;status("正在听","busy");live("检测到说话…")}
+   }else{
+     state.aboveSince=0;
+     if(state.speaking){
+       if(!state.silenceSince)state.silenceSince=t;
+       if(t-state.silenceSince>720){state.speaking=false;state.silenceSince=0;live("检测到停顿，正在处理…");endCycle(false)}
+     }else if(Date.now()-state.cycleStarted>25000)restartIdleCycle();
+   }
+ }
+ state.raf=requestAnimationFrame(vadLoop)
+}
+async function start(){
+ if(state.active)return;
+ try{
+  if(!window.MediaRecorder)throw new Error("当前浏览器不支持 MediaRecorder。");
+  state.stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+  state.audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+  await state.audioCtx.resume();
+  state.analyser=state.audioCtx.createAnalyser();state.analyser.fftSize=1024;
+  state.sourceNode=state.audioCtx.createMediaStreamSource(state.stream);state.sourceNode.connect(state.analyser);
+  state.active=true;el.talk.classList.add("active");el.talkLabel.textContent="结束同传";status("同传中","online");live("已开始监听，直接讲话即可");
+  beginCycle();vadLoop();
+ }catch(err){console.error(err);status("启动失败");live(err.message);alert(`无法启动：${err.message}`)}
+}
+async function stop(){
+ if(!state.active)return;
+ state.active=false;cancelAnimationFrame(state.raf);
+ try{if(state.recorder?.state!=="inactive"){state.recorder.onstop=null;state.recorder.stop()}}catch{}
+ try{state.stream?.getTracks().forEach(t=>t.stop())}catch{}
+ try{await state.audioCtx?.close()}catch{}
+ state.stream=null;state.audioCtx=null;state.analyser=null;state.sourceNode=null;state.recorder=null;state.speaking=false;state.ending=false;
+ el.talk.classList.remove("active");el.talkLabel.textContent="开始同传";el.meter.style.width="0";status("未连接");live("同传已结束");
+}
+el.talk.onclick=()=>state.active?stop():start();
+
+$("#copyBtn").onclick=async()=>{if(!state.messages.length)return;const text=state.messages.map(m=>`[${m.time}] ${m.sourceLang==="zh"?"中文→法语":"法语→中文"}\n原文：${m.original}\n译文：${m.translation}`).join("\n\n");await navigator.clipboard.writeText(text);live("对话已复制")};
+$("#clearBtn").onclick=async()=>{if(!confirm("确定清空本次全部记录吗？"))return;state.messages=[];save();render();el.summaryCard.hidden=true;el.summaryText.textContent="";live("记录已清空")};
+$("#agentBtn").onclick=()=>{el.agentAnswer.hidden=true;el.agentAnswer.textContent="";el.agentDialog.showModal();setTimeout(()=>el.agentInput.focus(),50)};
+$("#agentClose").onclick=()=>el.agentDialog.close();
+$("#agentSend").onclick=async()=>{const q=el.agentInput.value.trim();if(!q)return;el.agentAnswer.hidden=false;el.agentAnswer.textContent="AI 正在处理…";try{const r=await fetch("/api/assistant",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"agent",question:q,topic:el.topic.value.trim(),transcript:state.messages})});const d=await r.json();if(!r.ok)throw new Error(d.error||"请求失败");el.agentAnswer.textContent=d.text}catch(e){el.agentAnswer.textContent=`出错：${e.message}`}};
+$("#summaryBtn").onclick=async()=>{if(!state.messages.length)return alert("目前还没有可总结的对话。");el.summaryCard.hidden=false;el.summaryText.textContent="正在整理本次谈话…";el.summaryCard.scrollIntoView({behavior:"smooth"});try{const r=await fetch("/api/assistant",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"summary",topic:el.topic.value.trim(),transcript:state.messages})});const d=await r.json();if(!r.ok)throw new Error(d.error||"总结失败");el.summaryText.textContent=d.text}catch(e){el.summaryText.textContent=`总结失败：${e.message}`}};
+$("#copySummary").onclick=async()=>{if(el.summaryText.textContent){await navigator.clipboard.writeText(el.summaryText.textContent);live("总结已复制")}};
+window.addEventListener("beforeunload",()=>{if(state.active)stop()});
+render();
+</script>
+</body>
+</html>
