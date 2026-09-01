@@ -13,15 +13,19 @@ export default async function handler(req, res) {
     const transcribe = Boolean(body.transcribe);
     if (!target) return res.status(400).json({ error: "target 必须是 zh 或 fr。" });
 
+    const input = {
+      noise_reduction: { type: "far_field" }
+    };
+    if (transcribe) {
+      input.transcription = { model: "gpt-realtime-whisper" };
+    }
+
     const payload = {
       expires_after: { anchor: "created_at", seconds: 600 },
       session: {
         model: "gpt-realtime-translate",
         audio: {
-          input: {
-            transcription: transcribe ? { model: "gpt-realtime-whisper" } : null,
-            noise_reduction: { type: "far_field" }
-          },
+          input,
           output: { language: target }
         }
       }
