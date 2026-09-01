@@ -9,7 +9,14 @@ export default async function handler(req, res) {
 
   try {
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
-    const target = body.target === "zh" ? "zh" : "fr";
+    const target = body.target === "zh" ? "zh" : body.target === "fr" ? "fr" : null;
+    const transcribe = Boolean(body.transcribe);
+    if (!target) return res.status(400).json({ error: "target 必须是 zh 或 fr。" });
+
+    const input = {
+      noise_reduction: { type: "far_field" },
+      ...(transcribe ? { transcription: { model: "gpt-realtime-whisper" } } : {}),
+    };
 
     const response = await fetch(
       "https://api.openai.com/v1/realtime/translations/client_secrets",
@@ -23,10 +30,7 @@ export default async function handler(req, res) {
           session: {
             model: "gpt-realtime-translate",
             audio: {
-              input: {
-                transcription: { model: "gpt-realtime-whisper" },
-                noise_reduction: { type: "far_field" },
-              },
+              input,
               output: { language: target },
             },
           },
@@ -52,6 +56,7 @@ export default async function handler(req, res) {
       client_secret: data.value,
       expires_at: data.expires_at ?? null,
       target,
+      transcribe,
     });
   } catch (err) {
     console.error(err);
