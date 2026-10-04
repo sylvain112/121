@@ -11,6 +11,7 @@ actor RealtimeTranslationSocket {
         case sessionCreationFailed(String)
         case missingSecret
         case invalidResponse
+        case connectionTimeout
 
         var errorDescription: String? {
             switch self {
@@ -22,6 +23,8 @@ actor RealtimeTranslationSocket {
                 return "后端没有返回临时密钥。"
             case .invalidResponse:
                 return "后端返回格式无效。"
+            case .connectionTimeout:
+                return "实时翻译连接超时。"
             }
         }
     }
@@ -37,6 +40,8 @@ actor RealtimeTranslationSocket {
     private var receiveTask: Task<Void, Never>?
     private var deltaHandler: (@Sendable (String) -> Void)?
     private var errorHandler: (@Sendable (String) -> Void)?
+    private var ready = false
+    private var usingDirectAPIKey = false
 
     init(target: Target, backendBaseURL: URL) {
         self.target = target
@@ -51,15 +56,26 @@ actor RealtimeTranslationSocket {
         errorHandler = onError
     }
 
-    func connect() async throws {
-        let secret = try await createEphemeralSecret()
+    func connect(personalAPIKey: String? = nil) async throws {
+        disconnect()
+        ready = false
+
+        let trimmed = personalAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let credential: String
+        if !trimmed.isEmpty {
+            credential = trimmed
+            usingDirectAPIKey = true
+        } else {
+            credential = try await createEphemeralSecret()
+            usingDirectAPIKey = false
+        }
 
         guard let wsURL = URL(string: "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate") else {
             throw SocketError.invalidBackendURL
         }
 
         var request = URLRequest(url: wsURL)
-        request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
         request.setValue("zhfr-live-ios", forHTTPHeaderField: "OpenAI-Safety-Identifier")
 
         let socket = URLSession.shared.webSocketTask(with: request)
@@ -68,9 +84,16 @@ actor RealtimeTranslationSocket {
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
         }
+
+        for _ in 0..<120 {
+            if ready { return }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw SocketError.connectionTimeout
     }
 
     func disconnect() {
+        ready = false
         receiveTask?.cancel()
         receiveTask = nil
         webSocket?.cancel(with: .normalClosure, reason: nil)
@@ -78,7 +101,7 @@ actor RealtimeTranslationSocket {
     }
 
     func sendAudio16k(_ samples: [Float]) async {
-        guard !samples.isEmpty, let webSocket else { return }
+        guard ready, !samples.isEmpty, let webSocket else { return }
         let audio = PCMConverter.float16kToPCM16Base64_24k(samples)
         guard !audio.isEmpty else { return }
 
@@ -125,6 +148,28 @@ actor RealtimeTranslationSocket {
         return secret
     }
 
+    private func sendSessionUpdateIfNeeded() async throws {
+        guard usingDirectAPIKey, let webSocket else {
+            ready = true
+            return
+        }
+        let payload: [String: Any] = [
+            "type": "session.update",
+            "session": [
+                "audio": [
+                    "input": [
+                        "noise_reduction": ["type": "near_field"]
+                    ],
+                    "output": ["language": target.rawValue]
+                ]
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        guard let json = String(data: data, encoding: .utf8) else { throw SocketError.invalidResponse }
+        try await webSocket.send(.string(json))
+        ready = true
+    }
+
     private func receiveLoop() async {
         guard let webSocket else { return }
 
@@ -140,7 +185,7 @@ actor RealtimeTranslationSocket {
                 @unknown default:
                     continue
                 }
-                handleEvent(text)
+                await handleEvent(text)
             } catch {
                 if !Task.isCancelled {
                     errorHandler?("\(target.rawValue.uppercased()) 通道断开：\(error.localizedDescription)")
@@ -150,12 +195,26 @@ actor RealtimeTranslationSocket {
         }
     }
 
-    private func handleEvent(_ json: String) {
+    private func handleEvent(_ json: String) async {
         guard
             let data = json.data(using: .utf8),
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let type = object["type"] as? String
         else { return }
+
+        if type == "session.created" {
+            do {
+                try await sendSessionUpdateIfNeeded()
+            } catch {
+                errorHandler?("\(target.rawValue.uppercased()) 会话配置失败：\(error.localizedDescription)")
+            }
+            return
+        }
+
+        if type == "session.updated" {
+            ready = true
+            return
+        }
 
         if type == "session.output_transcript.delta", let delta = object["delta"] as? String {
             deltaHandler?(delta)
