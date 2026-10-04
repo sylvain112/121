@@ -6,6 +6,7 @@ final class LocalWhisperService: ObservableObject {
     enum ServiceError: LocalizedError {
         case tokenizerUnavailable
         case microphoneDenied
+        case audioProcessorUnavailable
 
         var errorDescription: String? {
             switch self {
@@ -13,6 +14,8 @@ final class LocalWhisperService: ObservableObject {
                 return "WhisperKit tokenizer 加载失败。"
             case .microphoneDenied:
                 return "没有麦克风权限。"
+            case .audioProcessorUnavailable:
+                return "无法取得 WhisperKit 实时麦克风音频。"
             }
         }
     }
@@ -66,18 +69,23 @@ final class LocalWhisperService: ObservableObject {
             audioProcessor: pipeline.audioProcessor,
             decodingOptions: options,
             requiredSegmentsForConfirmation: 1,
-            silenceThreshold: 0.3,
+            silenceThreshold: 0.15,
             compressionCheckWindow: 60,
-            useVAD: true
+            useVAD: false
         ) { [weak self] _, newState in
             let confirmed = newState.confirmedSegments.map(\.text).joined(separator: " ")
             let pending = newState.unconfirmedText.joined(separator: " ")
-            let current = newState.currentText
+            var current = newState.currentText
+            if current == "Waiting for speech..." {
+                current = ""
+            }
             let combined = [confirmed, pending, current]
                 .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                 .joined(separator: " ")
+                .replacingOccurrences(of: "Waiting for speech...", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
+            guard !combined.isEmpty else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.liveText = combined
@@ -96,7 +104,11 @@ final class LocalWhisperService: ObservableObject {
             throw ServiceError.microphoneDenied
         }
         guard let transcriber = streamTranscriber else { return }
+        guard let processor = whisperKit?.audioProcessor as? AudioProcessor else {
+            throw ServiceError.audioProcessorUnavailable
+        }
 
+        liveText = ""
         transcriptionTask?.cancel()
         transcriptionTask = Task {
             do {
@@ -110,13 +122,11 @@ final class LocalWhisperService: ObservableObject {
             }
         }
 
-        try? await Task.sleep(nanoseconds: 250_000_000)
-        if let processor = whisperKit?.audioProcessor as? AudioProcessor {
-            processor.audioBufferCallback = { [weak self] chunk in
-                guard let self else { return }
-                Task { @MainActor in
-                    self.onAudioChunk?(chunk)
-                }
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        processor.audioBufferCallback = { [weak self] chunk in
+            guard let self, !chunk.isEmpty else { return }
+            Task { @MainActor in
+                self.onAudioChunk?(chunk)
             }
         }
     }
@@ -127,6 +137,5 @@ final class LocalWhisperService: ObservableObject {
         }
         transcriptionTask?.cancel()
         transcriptionTask = nil
-        liveText = ""
     }
 }
