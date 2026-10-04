@@ -1,0 +1,36 @@
+name: ZHFRLive
+options:
+  bundleIdPrefix: com.zihang
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+
+packages:
+  ArgmaxOSS:
+    url: https://github.com/argmaxinc/argmax-oss-swift.git
+    from: 1.0.0
+
+targets:
+  ZHFRLive:
+    type: application
+    platform: iOS
+    sources:
+      - path: ZHFRLive
+    info:
+      path: ZHFRLive/Info.plist
+      properties:
+        CFBundleDisplayName: 中法同传
+        UILaunchScreen: {}
+        NSMicrophoneUsageDescription: 用于本地语音识别和中法实时同传。
+        UIApplicationSupportsIndirectInputEvents: true
+        UIRequiresFullScreen: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zihang.zhfrlive
+        PRODUCT_NAME: ZHFRLive
+        SWIFT_VERSION: 5.10
+        TARGETED_DEVICE_FAMILY: "1"
+        IPHONEOS_DEPLOYMENT_TARGET: 17.0
+    dependencies:
+      - package: ArgmaxOSS
+        product: WhisperKit
