@@ -3,16 +3,16 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var model: InterpreterViewModel
     @State private var showSettings = false
+    @State private var summaryExpanded = true
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
                     statusCard
-                    liveCard
+                    conversationCard
                     actionsCard
                     if !model.summaryText.isEmpty { summaryCard }
-                    transcriptCard
                 }
                 .padding(16)
             }
@@ -103,10 +103,10 @@ struct ContentView: View {
         .background(.background, in: RoundedRectangle(cornerRadius: 18))
     }
 
-    private var liveCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+    private var conversationCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("实时")
+                Text("同传记录")
                     .font(.headline)
                 Spacer()
                 if let language = model.detectedLanguage {
@@ -118,25 +118,70 @@ struct ContentView: View {
                 }
             }
 
-            Group {
-                Text("原文 · 本地 Whisper")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(model.liveSource.isEmpty ? "等待讲话…" : model.liveSource)
-                    .font(.title3)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 9) {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(model.isRunning ? Color.green : Color.secondary)
+                                .frame(width: 7, height: 7)
+                            Text("实时")
+                                .font(.subheadline.bold())
+                        }
 
-                Divider()
+                        Text("原文 · 本地 Whisper")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(model.liveSource.isEmpty ? "等待讲话…" : model.liveSource)
+                            .font(.title3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
 
-                Text("译文")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(model.liveTranslation.isEmpty ? "等待实时译文…" : model.liveTranslation)
-                    .font(.title2.weight(.semibold))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                        Text("译文")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 3)
+                        Text(model.liveTranslation.isEmpty ? "等待实时译文…" : model.liveTranslation)
+                            .font(.title3.weight(.semibold))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+
+                    Divider()
+
+                    Text("文字记录")
+                        .font(.subheadline.bold())
+
+                    if model.lines.isEmpty {
+                        Text("完成的分段记录会出现在这里。上下拖动此区域即可查看全部内容。")
+                            .foregroundStyle(.secondary)
+                            .font(.subheadline)
+                    } else {
+                        ForEach(model.lines) { line in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(line.sourceLanguage == .zh ? "中文 → Français" : "Français → 中文")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.secondary)
+                                Text(line.original)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                Text(line.translation)
+                                    .font(.body.weight(.medium))
+                                    .textSelection(.enabled)
+                            }
+                            .padding(.vertical, 3)
+
+                            if line.id != model.lines.last?.id {
+                                Divider()
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.trailing, 4)
             }
+            .frame(height: 480)
         }
         .padding(16)
         .background(.background, in: RoundedRectangle(cornerRadius: 18))
@@ -168,52 +213,35 @@ struct ContentView: View {
 
     private var summaryCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("AI 总结")
-                .font(.headline)
-            Text(model.summaryText)
-                .font(.body)
-                .textSelection(.enabled)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(.background, in: RoundedRectangle(cornerRadius: 18))
-    }
-
-    private var transcriptCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("对话记录")
-                .font(.headline)
-
-            if model.lines.isEmpty {
-                if model.recognizedText.isEmpty {
-                    Text("完成的对话会出现在这里。")
-                        .foregroundStyle(.secondary)
-                        .font(.subheadline)
-                } else {
-                    Text(model.recognizedText)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    summaryExpanded.toggle()
                 }
-            } else {
-                ForEach(model.lines) { line in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(line.sourceLanguage == .zh ? "中文 → Français" : "Français → 中文")
-                            .font(.caption.bold())
-                            .foregroundStyle(.secondary)
-                        Text(line.original)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Text(line.translation)
-                            .font(.body.weight(.medium))
-                    }
-                    .padding(.vertical, 6)
-                    if line.id != model.lines.last?.id {
-                        Divider()
-                    }
+            } label: {
+                HStack {
+                    Text("AI 总结")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: summaryExpanded ? "chevron.up" : "chevron.down")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
                 }
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(summaryExpanded ? "收起 AI 总结" : "展开 AI 总结")
+
+            if summaryExpanded {
+                Divider()
+                Text(model.summaryText)
+                    .font(.body)
+                    .textSelection(.enabled)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .background(.background, in: RoundedRectangle(cornerRadius: 18))
     }
