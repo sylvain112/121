@@ -33,6 +33,10 @@ open ZHFRLive.xcodeproj
 4. Xcode 中选择自己的 Apple Developer Team。
 5. 连接 iPhone，选择真机运行。
 
+## 无签名 IPA
+
+仓库包含 `.github/workflows/build-ios-unsigned.yml`。GitHub Actions 会在 macOS/Xcode 上构建真机 Release `.app`，再打包为 `ZHFRLive-unsigned.ipa`，用于 Sideloadly / AltStore / SideStore 等工具自行签名安装。
+
 ## 第一次测试
 
 1. App 首次启动会下载约 626 MB 的本地模型，并进行 Core ML specialization。
