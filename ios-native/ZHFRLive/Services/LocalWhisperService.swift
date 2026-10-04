@@ -75,21 +75,17 @@ final class LocalWhisperService: ObservableObject {
         ) { [weak self] _, newState in
             let confirmed = newState.confirmedSegments.map(\.text).joined(separator: " ")
             let pending = newState.unconfirmedText.joined(separator: " ")
-            var current = newState.currentText
-            if current == "Waiting for speech..." {
-                current = ""
-            }
-            let combined = [confirmed, pending, current]
+            let combined = [confirmed, pending, newState.currentText]
                 .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                 .joined(separator: " ")
-                .replacingOccurrences(of: "Waiting for speech...", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
 
-            guard !combined.isEmpty else { return }
+            let cleaned = Self.cleanWhisperText(combined)
+            guard !cleaned.isEmpty else { return }
+
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.liveText = combined
-                self.onTextChanged?(combined)
+                self.liveText = cleaned
+                self.onTextChanged?(cleaned)
             }
         }
 
@@ -137,5 +133,14 @@ final class LocalWhisperService: ObservableObject {
         }
         transcriptionTask?.cancel()
         transcriptionTask = nil
+    }
+
+    nonisolated static func cleanWhisperText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "<\\|[^>]+\\|>", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "Waiting for speech...", with: "")
+            .replacingOccurrences(of: "[ \\t]+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: " *\\n *", with: "\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
