@@ -45,6 +45,10 @@ do {
         prewarm: true, load: true, download: true))
     print("MODEL: CPU-only runner check; multilingual=\(pipeline.textDecoder.isModelMultilingual), logits=\(pipeline.textDecoder.logitsSize ?? 0)")
     let diagnosticAudio = try processedAudio(path: "\(directory)/fr.wav")
+    let controlAudio = try AudioProcessor.loadAudioAsFloatArray(fromPath: "\(directory)/jfk.wav")
+    let control = try await pipeline.transcribe(audioArray: controlAudio,
+        decodeOptions: DecodingOptions(language: "en", skipSpecialTokens: true))
+    print("CONTROL natural en: \(control.map(\.text).joined()) language=\(control.map(\.language))")
     let rawAudio = try AudioProcessor.loadAudioAsFloatArray(fromPath: "\(directory)/fr.wav")
     let stock = try await pipeline.transcribe(audioArray: rawAudio,
         decodeOptions: DecodingOptions(language: "fr", skipSpecialTokens: true))
@@ -66,7 +70,9 @@ do {
         try require(abs(sample.logProbs.last! + 0.12693) < 0.001, "Greedy log probability must match float32 softmax")
     }
 
+    var failures: [String] = []
     for source in [TranscriptLine.SourceLanguage.fr, .zh] {
+      do {
         let audio = try processedAudio(path: "\(directory)/\(source.rawValue).wav")
         let start = Date()
         let results = try await pipeline.transcribe(audioArray: audio,
@@ -95,7 +101,9 @@ do {
         if ProcessInfo.processInfo.environment["ZHFR_CHECK_LIVE_TRANSLATION"] == "1" {
             try await checkTranslation(audio: audio, source: source)
         }
+      } catch { failures.append("\(source.rawValue): \(error.localizedDescription)") }
     }
+    try require(failures.isEmpty, failures.joined(separator: "; "))
     print("Actual base-model bilingual ASR, bounded timestamps and translation smoke checks passed.")
 } catch {
     // Never print request bodies or ephemeral credentials.
