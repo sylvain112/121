@@ -19,7 +19,10 @@ enum BilingualWhisperConfiguration {
             usePrefillPrompt: true, detectLanguage: language == .automatic,
             skipSpecialTokens: true, withoutTimestamps: false, wordTimestamps: true,
             clipTimestamps: [Float(max(0, clipStart))], windowClipTime: final ? 0 : 0.15,
-            suppressTokens: [], concurrentWorkerCount: 1)
+            // The SDK's first-token threshold normally triggers a warmer
+            // retry. With retries disabled it can stop before producing any
+            // text, especially on a short live clip. Decode the bounded pass.
+            suppressTokens: [], firstTokenLogProbThreshold: nil, concurrentWorkerCount: 1)
     }
 }
 

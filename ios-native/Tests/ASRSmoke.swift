@@ -13,6 +13,7 @@ func processedAudio(path: String) throws -> [Float] {
         output += processor.process(Array(input[start..<min(start + 1_600, input.count)]), boost: true).samples
     }
     output += [Float](repeating: 0, count: 12_800)
+    print("AUDIO: \(String(format: "%.2f", Double(input.count) / 16_000)) s, peak \(String(format: "%.3f", input.map { abs($0) }.max() ?? 0))")
     return output
 }
 
@@ -52,7 +53,7 @@ do {
         let results = try await pipeline.transcribe(audioArray: audio,
             decodeOptions: BilingualWhisperConfiguration.options(language: .automatic, final: true))
         let text = SentenceAssembler.clean(results.map(\.text).joined(separator: " "))
-        print("ASR \(source.rawValue): \(text) [\(String(format: "%.2f", Date().timeIntervalSince(start))) s, Mac runner]")
+        print("ASR \(source.rawValue): \(text) [\(String(format: "%.2f", Date().timeIntervalSince(start))) s, Mac runner; language=\(results.map(\.language)), segments=\(results.flatMap(\.segments).count)]")
         try require(!results.isEmpty && results.allSatisfy { $0.language == source.rawValue }, "Bilingual ASR detected an unexpected language")
         try require(LanguageDetector.detect(text) == source, "Bilingual ASR produced unsuitable text")
         if source == .fr { try require(text.lowercased().contains("bonjour"), "French speech lost the opening sentence") }
