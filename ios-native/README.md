@@ -1,55 +1,57 @@
-# ZHFRLive iOS v1
+# ZHFRLive iOS v2.5
 
-原生 iPhone 中法实时同传第一版骨架。
+原生 iPhone 中法同传：本地 Whisper 识别原文，再使用 AI 翻译文字。录音不会作为翻译请求上传。
 
-## 当前架构
+## 识别和收音
 
-- **本地语音转文字**：Argmax WhisperKit，模型 `large-v3-v20240930_626MB`
-- **实时翻译**：OpenAI `gpt-realtime-translate`
-- **源语言判断**：完全在手机端，根据本地转写文本判断中文 / 法语
-- **OpenAI API Key**：不放进 App；App 只从现有 Vercel 后端 `/api/session` 获取短期 `ek_...` client secret
-- **音频链路**：同一个 WhisperKit 麦克风采集同时用于本地转写和 Realtime Translation，不再使用 Safari WebRTC 双轨方案
+- 本地模型可选快速 `openai_whisper-base`、均衡 `openai_whisper-small`、Turbo `openai_whisper-large-v3-v20240930_626MB`；默认快速。Turbo 使用适配 Apple Core ML 的 Large v3 Turbo 权重。Windows Subtitle Edit 的 Purfview Faster Whisper XXL 可执行文件及其 CTranslate2 模型文件不能直接在 iOS 运行，手机使用 WhisperKit 引擎及对应的 Core ML 权重。
+- 模型保存在 Application Support 的 `ZHFRModels`，避开临时缓存。模型及分词器实际加载成功后才写入完整性记录；重开 App 直接指定本机模型目录，关闭自动下载。记录使用相对路径，可适应覆盖安装时的容器路径变化。首次加载仍需将模型放入内存，状态明确区分下载与本机加载。
+- 沿用 v2.4 的完整模型文件；下载中断不会被误标为已完成。已完成文件若缺失或截断，只清除损坏文件并请求修复。下载不使用引发后台传输连接错误的 background session，失败显示简短提示及重试按钮。首次下载或修复时保持 App 在前台；删除 App 会删除其模型文件。
+- 每次有至少 0.55 秒新增音频且存在待识别人声时解码，原文草稿通过解码进度提前显示。词级时间戳保留；标点句离实时音频边缘至少 0.35 秒时可在一次完整解码后确认，靠近边缘的草稿继续校验。未加标点的尾句使用稳定结果及停顿；停止时补齐最后一句。
+- 自动识别的候选语言标记只保留中文与法语，生成时也屏蔽其他语言标记。草稿及已确认句过滤其他文字系统、明显属于其他语言的长句；短人名仍保留。共享拉丁字母的短外语词不能仅靠文字可靠区分。
+- 可选择“仅中法 · 自动”，或固定法语→中文 / 中文→法语。固定源语言可省去每次语言检测。实时解码关闭温度回退，限制单次生成长度，避免低置信度音频反复重算。
+- 词级时间戳被限制在实际音频范围内，避免模型补齐窗口中的未来时间戳让后续识别空转。停顿同时参考音量及最后识别词的结束时间；背景声音不再单独阻止断句。主页区分“正在识别”和上一段实际识别耗时，跳过解码不覆盖耗时。
+- App 自行配置麦克风音频会话，默认优先手机内置输入；也可跟随系统选择蓝牙、耳机或外接输入。硬件支持时选择前置全向输入，主页显示实际输入设备。
+- 音频统一转为 16 kHz 单声道；移除直流偏移，弱人声增益最高 4 倍且按峰值限制，强声不会因上一段增益发生削波。人声检测基于增益前信号。纯静音不持续解码，空闲缓存保持有限长度。
+- 清空保持音频时钟连续，并拒绝之前的解码进度及翻译回调。
 
-Argmax 当前官方文档推荐 `large-v3-v20240930_626MB` 作为 iOS 上最高多语言准确率的 WhisperKit 变体。首次运行会下载模型，之后模型保存在设备上，本地转写不再产生 OpenAI 转写费用。
+## 翻译和记录
 
-## 生成 Xcode 项目
+- AI 仅接收确认后的逐句原文，严格中文与法语互译，不重新识别录音。通过 OpenAI Responses 文字 API 请求；可选择 `gpt-6-luna`（默认）、`gpt-4o-mini`、`gpt-6.1-sol`、`gpt-6-astra`。模型权限及余额取决于使用的 API 账户。
+- 每句有独立 ID 和回复绑定；同时处理最多三句，按原始讲话顺序展示。App 请求限时 25 秒，服务器上游请求限时 20 秒；空译文、超时、认证及配额错误会结束等待、保留原文并显示手动重试。不会自动重发付费翻译。
+- 独立的常见短句（如 Oui、Non、Merci、Bonjour、谢谢、你好）先使用精确匹配的本地译文，立即显示；长句不进行部分词替换，真实重复的短句仍逐句记录。
+- 主页显示最近 4 个条目，每句显示原文及对应译文；正在识别的草稿占一个条目。点击“全部记录”可查看完整历史，不受四句窗口限制。加载中和翻译失败也保留对应原文。
+- 个人 API Key 仅保存到本机 Keychain；填写后直接调用 `/v1/responses`。未填写或关闭个人 API 时，调用 Vercel `/api/translate`，服务器使用已有的 `OPENAI_API_KEY`。语音识别模型与文字翻译模型分别配置。
+- AI 总结和原文导出保留；设置中的总结模型与识别模型分别配置。
 
-> iOS App 的编译与签名必须使用 macOS + Xcode。Windows 不能直接生成可安装的 iPhone IPA。
+## 构建
 
-1. 在 Mac 安装 Xcode 16+。
-2. 安装 XcodeGen：
+需要 macOS、Xcode 16+ 和 XcodeGen：
 
 ```bash
 brew install xcodegen
-```
-
-3. 在本目录运行：
-
-```bash
 xcodegen generate
 open ZHFRLive.xcodeproj
 ```
 
-4. Xcode 中选择自己的 Apple Developer Team。
-5. 连接 iPhone，选择真机运行。
+在 Xcode 中选择开发者 Team 和连接的 iPhone，即可签名运行。
 
-## 无签名 IPA
+仓库工作流 `.github/workflows/build-ios-unsigned.yml` 在 macOS / Xcode 26.3 上执行回归检查、编译真机 Release App，并生成 `ZHFRLive-unsigned.ipa`。无签名 IPA 可用 Sideloadly / AltStore / SideStore 自行签名安装。
 
-仓库包含 `.github/workflows/build-ios-unsigned.yml`。GitHub Actions 会在 macOS/Xcode 上构建真机 Release `.app`，再打包为 `ZHFRLive-unsigned.ipa`，用于 Sideloadly / AltStore / SideStore 等工具自行签名安装。
+## 验证
 
-## 第一次测试
+`Tests/main.swift` 覆盖稳定及快速断句、草稿修订、真实重复句、双语切换、音频时钟、事件去重、回复乱序与重试隔离、四句窗口、背景静音、持续弱声、突发强声、直流偏移、语言过滤、未来时间戳、短句本地翻译，以及冷启动缓存、容器路径变化、损坏文件修复、旧文件迁移。缓存检查使用文件布局样本，不替代真机模型加载验证。
 
-1. App 首次启动会下载约 626 MB 的本地模型，并进行 Core ML specialization。
-2. 等界面显示“本地模型已就绪”。
-3. 点击“开始同传”。
-4. 先连续说中文，观察原文与法语译文。
-5. 再连续说法语，观察原文与中文译文。
+`Tests/TextTranslationSmoke.swift` 检查个人 Key 与服务器两条文字翻译路径、准确原文、返回解析、空译文、超时及 API 错误。`Tests/translate-backend.mjs` 检查四种模型的请求、输入校验和上游错误；常规测试不调用付费 API。提交消息含 `[check-text-translation]` 时，CI 另外对已部署后端进行一次法译中及一次中译法检查。
 
-## 下一步
+`Tests/run-language-smoke.sh` 在 macOS 上合成中法语音，下载实际 base 模型，检查语言限制及现有后端的中法实时翻译。使用 OpenAI Whisper 的独立自然语音样本验证未修改的 SDK；只有这个基准成功，才继续运行 App 的语音质量检查。Mac 运行环境若连基准都未正确识别，会明确输出 `INCONCLUSIVE ASR`，不能将其算作识别质量通过。CI 仅在提交消息含 `[check-bilingual-asr]` 时执行这一下载模型及联网的检查，联网翻译由 `ZHFR_CHECK_LIVE_TRANSLATION=1` 启用。
 
-- 本地 Whisper 分句 / VAD 与两条 Translation 输出更精确地对齐
-- 本地模型档位：Small / Medium / Large-v3 Turbo
-- 译文语音播放
-- 最终高精度二次校正
-- 会话总结与导出
-- 真机性能 / 发热 / 内存 profiling
+Mac 的合成语音检查不能验证实际 iPhone 麦克风、教室噪声或真机速度。真机需检查：
+
+1. 以正常音量连续说法语，确认原文先出现、译文绑定正确、首页最多四条，完整历史不丢失。
+2. 对比快速 / 均衡 / Turbo 档的识别耗时、法语人名和专有名词准确率；分别测试自动语言和固定法语。
+3. 对比近距离、教室远距离、背景噪声、手机与外接麦克风，检查主页显示的输入设备。
+4. 测试短句“Oui / Non / Merci”、长句、真实重复、停止补齐最后一句、清空后继续讲话及失败重试。
+5. 下载完模型后关闭、重开 App，断网验证本地模型仍可准备并识别；联网恢复后重试待翻译句。覆盖安装保留文件，卸载后需要重新下载。
+
+弱声增益不能提高声音本身的信噪比，实际远距离收音仍取决于设备、说话距离和背景噪声。实际延迟也取决于手机性能、模型档位和网络，未通过真机测量前不宣称固定秒数或性能提升倍数。

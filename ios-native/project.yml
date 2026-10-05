@@ -8,7 +8,7 @@ options:
 packages:
   ArgmaxOSS:
     url: https://github.com/argmaxinc/argmax-oss-swift.git
-    from: 1.0.0
+    exactVersion: 1.1.0
 
 targets:
   ZHFRLive:
@@ -20,6 +20,8 @@ targets:
       path: ZHFRLive/Info.plist
       properties:
         CFBundleDisplayName: 中法同传
+        CFBundleShortVersionString: "2.5"
+        CFBundleVersion: "25"
         UILaunchScreen: {}
         NSMicrophoneUsageDescription: 用于本地语音识别和中法实时同传。
         UIApplicationSupportsIndirectInputEvents: true

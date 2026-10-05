@@ -3,27 +3,74 @@ name: Build unsigned iOS IPA
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'codex/zhfr-*']
     paths:
       - 'ios-native/**'
+      - 'api/translate.js'
       - '.github/workflows/build-ios-unsigned.yml'
+
+concurrency:
+  group: zhfr-ios-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 45
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16.4
+      - name: Select Xcode 26.3
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '16.4'
+          xcode-version: '26.3'
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Check sentence recording regressions
+        working-directory: ios-native
+        run: |
+          swiftc \
+            ZHFRLive/Models/TranscriptLine.swift \
+            ZHFRLive/Services/LanguageDetector.swift \
+            ZHFRLive/Services/SentenceAssembler.swift \
+            ZHFRLive/Services/TranslationEventBuffer.swift \
+            ZHFRLive/Services/TranslationBindings.swift \
+            ZHFRLive/Services/MicrophoneSignalProcessor.swift \
+            ZHFRLive/Services/TranscriptWindow.swift \
+            ZHFRLive/Services/PhraseTranslator.swift \
+            ZHFRLive/Services/RecognitionOptions.swift \
+            ZHFRLive/Services/LocalModelCache.swift \
+            Tests/main.swift \
+            -o "$RUNNER_TEMP/zhfr-sentence-tests"
+          "$RUNNER_TEMP/zhfr-sentence-tests"
+
+      - name: Check text-only translation and failure handling
+        working-directory: ios-native
+        run: |
+          node Tests/translate-backend.mjs
+          swiftc -parse-as-library \
+            ZHFRLive/Models/TranscriptLine.swift \
+            ZHFRLive/Services/TextTranslationService.swift \
+            Tests/TextTranslationSmoke.swift \
+            -o "$RUNNER_TEMP/zhfr-text-translation-tests"
+          "$RUNNER_TEMP/zhfr-text-translation-tests"
+
+      - name: Check deployed text translation in both directions
+        if: contains(github.event.head_commit.message, '[check-text-translation]')
+        env:
+          ZHFR_CHECK_TEXT_TRANSLATION: '1'
+        run: '"$RUNNER_TEMP/zhfr-text-translation-tests"'
+
+      - name: Check actual bilingual speech and live translation
+        if: contains(github.event.head_commit.message, '[check-bilingual-asr]')
+        working-directory: ios-native
+        env:
+          ZHFR_CHECK_LIVE_TRANSLATION: '1'
+        run: bash Tests/run-language-smoke.sh
 
       - name: Generate Xcode project
         working-directory: ios-native
