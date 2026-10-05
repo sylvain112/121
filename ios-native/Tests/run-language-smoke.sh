@@ -10,11 +10,11 @@ cat > "$SMOKE_DIR/Package.swift" <<'PACKAGE'
 // swift-tools-version: 5.10
 import PackageDescription
 let package = Package(name: "ZHFRSmoke", platforms: [.macOS(.v14)],
-    dependencies: [.package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", exact: "1.1.0")],
+    dependencies: [.package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", exact: "0.17.0")],
     targets: [.executableTarget(name: "ZHFRSmoke", dependencies: [.product(name: "WhisperKit", package: "argmax-oss-swift")])])
 PACKAGE
 cp ZHFRLive/Models/TranscriptLine.swift "$SMOKE_DIR/Sources/ZHFRSmoke/"
-for SERVICE in RecognitionOptions BilingualWhisperTokenizer LiveTextDecoder LanguageDetector SentenceAssembler MicrophoneSignalProcessor PhraseTranslator RealtimeTranslationSocket PCMConverter TranslationEventBuffer; do
+for SERVICE in RecognitionOptions BilingualWhisperTokenizer LanguageDetector SentenceAssembler MicrophoneSignalProcessor PhraseTranslator RealtimeTranslationSocket PCMConverter TranslationEventBuffer; do
   cp "ZHFRLive/Services/$SERVICE.swift" "$SMOKE_DIR/Sources/ZHFRSmoke/"
 done
 cp Tests/ASRSmoke.swift "$SMOKE_DIR/Sources/ZHFRSmoke/main.swift"

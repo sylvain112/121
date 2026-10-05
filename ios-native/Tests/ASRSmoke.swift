@@ -61,14 +61,6 @@ do {
     let allowed = Set([tokenizer.convertTokenToId("<|fr|>")!, tokenizer.convertTokenToId("<|zh|>")!])
     try require(tokenizer.allLanguageTokens == allowed, "Language detector must allow exactly French and Chinese")
     try require(!tokenizer.blockedLanguageTokens.isEmpty, "Other Whisper languages must be suppressed")
-    for type in [MLMultiArrayDataType.float16, .float32] {
-        let logits = try MLMultiArray(shape: [1, 1, 4], dataType: type)
-        let values: [Float] = [-10, 3, 1, -.infinity]
-        for (i, value) in values.enumerated() { logits[i] = NSNumber(value: value) }
-        let sample = await LiveGreedyTokenSampler(endToken: 3).update(tokens: [0], logits: logits, logProbs: [0])
-        try require(sample.tokens.last == 1 && !sample.completed, "Greedy sampling must respect Core ML storage type")
-        try require(abs(sample.logProbs.last! + 0.12693) < 0.001, "Greedy log probability must match float32 softmax")
-    }
 
     var failures: [String] = []
     for source in [TranscriptLine.SourceLanguage.fr, .zh] {

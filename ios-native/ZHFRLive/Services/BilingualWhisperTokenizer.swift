@@ -7,7 +7,6 @@ enum BilingualWhisperConfiguration {
         guard !(tokenizer is BilingualWhisperTokenizer) else { return }
         let bilingual = try BilingualWhisperTokenizer(wrapping: tokenizer)
         pipeline.tokenizer = bilingual
-        pipeline.textDecoder = LiveTextDecoder(wrapping: pipeline.textDecoder)
         // DecodingOptions.suppressTokens excludes special-token IDs. A direct
         // filter also prevents foreign language tokens during text generation.
         pipeline.textDecoder.logitsFilters = (pipeline.textDecoder.logitsFilters ?? []) +
