@@ -85,12 +85,16 @@ struct LocalModelCache {
             throw CacheError.incomplete
         }
         var files: [String: Int64] = [:]
-        let base = folder.path + "/"
+        // Foundation may enumerate /var through /private/var on Apple systems.
+        // Compare normalized components, including directory URL trailing slashes.
+        let base = folder.resolvingSymlinksInPath().standardizedFileURL.pathComponents
         let enumerator = manager.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
         while let file = enumerator?.nextObject() as? URL {
             if (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
                let size = fileSize(file), size > 0 {
-                files[String(file.path.dropFirst(base.count))] = size
+                let components = file.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+                guard components.starts(with: base), components.count > base.count else { continue }
+                files[components.dropFirst(base.count).joined(separator: "/")] = size
             }
         }
         let data = try JSONEncoder().encode(Receipt(files: files))
