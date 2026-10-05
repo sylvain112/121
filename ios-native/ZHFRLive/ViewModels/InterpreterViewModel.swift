@@ -22,11 +22,11 @@ final class InterpreterViewModel: ObservableObject {
     let whisper = LocalWhisperService()
     let settings = AppSettings()
 
-    private struct TranslationJob { let lineID: UUID; let audio: [Float] }
+    private struct TranslationJob { let lineID: UUID }
     private let backendURL = URL(string: "https://zhfr-live-final.vercel.app")!
     private lazy var summaryService = AISummaryService(backendBaseURL: backendURL)
+    private lazy var translationService = TextTranslationService(backendBaseURL: backendURL)
     private var jobs: [TranslationJob] = []
-    private var retryAudio: [UUID: [Float]] = [:]
     private var queuedIDs: Set<UUID> = []
     private var bindings = TranslationBindings()
     private var translationTasks: [UUID: Task<Void, Never>] = [:]
@@ -42,7 +42,7 @@ final class InterpreterViewModel: ObservableObject {
             self.detectedLanguage = LanguageDetector.detect(text) ?? self.lines.last?.sourceLanguage
             self.rebuildRecognizedText()
         }
-        whisper.onSentence = { [weak self] sentence, audio in self?.enqueue(sentence, audio: audio) }
+        whisper.onSentence = { [weak self] sentence in self?.enqueue(sentence) }
         whisper.onAudioChunk = { [weak self] chunk in self?.handleMicChunk(chunk) }
         whisper.onError = { [weak self] message in
             guard let self else { return }
@@ -53,6 +53,7 @@ final class InterpreterViewModel: ObservableObject {
 
     func prepareModel() async {
         guard !isRunning, !isChangingState else { return }
+        lastError = ""
         do {
             try await whisper.prepare(profile: settings.recognitionProfile)
             if !isRunning && !isChangingState { status = whisper.modelStatus }
@@ -104,7 +105,6 @@ final class InterpreterViewModel: ObservableObject {
         for task in translationTasks.values { task.cancel() }
         translationTasks.removeAll()
         jobs.removeAll()
-        retryAudio.removeAll()
         queuedIDs.removeAll()
         retryingIDs.removeAll()
         bindings.clear()
@@ -119,11 +119,12 @@ final class InterpreterViewModel: ObservableObject {
     }
 
     func retryTranslation(_ lineID: UUID) {
-        guard !queuedIDs.contains(lineID), let audio = retryAudio[lineID],
+        guard !queuedIDs.contains(lineID),
               let index = lines.firstIndex(where: { $0.id == lineID }) else { return }
         lines[index].translation = ""
         lines[index].translationError = nil
-        jobs.append(TranslationJob(lineID: lineID, audio: audio))
+        retryingIDs.insert(lineID)
+        jobs.append(TranslationJob(lineID: lineID))
         queuedIDs.insert(lineID)
         startTranslationWorker()
     }
@@ -163,22 +164,21 @@ final class InterpreterViewModel: ObservableObject {
         } catch { lastError = "导出失败：\(error.localizedDescription)" }
     }
 
-    private func enqueue(_ sentence: RecognizedSentence, audio: [Float]) {
+    private func enqueue(_ sentence: RecognizedSentence) {
         guard !lines.contains(where: { $0.id == sentence.id }) else { return }
         lines.append(TranscriptLine(id: sentence.id, sourceLanguage: sentence.sourceLanguage,
             original: sentence.original, translation: ""))
         detectedLanguage = sentence.sourceLanguage
-        retryAudio[sentence.id] = audio
-        jobs.append(TranslationJob(lineID: sentence.id, audio: audio))
+        jobs.append(TranslationJob(lineID: sentence.id))
         queuedIDs.insert(sentence.id)
         rebuildRecognizedText()
         startTranslationWorker()
     }
 
     private func startTranslationWorker() {
-        // Two independent sentences can finish out of order; their IDs keep
+        // Concurrent sentences can finish out of order; their IDs keep
         // displayed originals and translations in the original speaking order.
-        while translationTasks.count < 2 && !jobs.isEmpty {
+        while translationTasks.count < 3 && !jobs.isEmpty {
             let job = jobs.removeFirst()
             guard let line = lines.first(where: { $0.id == job.lineID }) else {
                 queuedIDs.remove(job.lineID)
@@ -204,36 +204,19 @@ final class InterpreterViewModel: ObservableObject {
         if let text = PhraseTranslator.translate(line.original, from: line.sourceLanguage) {
             let ticket = bindings.begin(lineID: job.lineID)
             updateTranslation(text, ticket: ticket, final: true)
-            retryAudio.removeValue(forKey: job.lineID)
             return
         }
-        for attempt in 0..<2 {
+        let ticket = bindings.begin(lineID: job.lineID)
+        do {
+            let text = try await translationService.translate(original: line.original, from: line.sourceLanguage,
+                model: settings.translationModel, apiKey: apiKey)
             guard !Task.isCancelled, generation == recordGeneration else { return }
-            let ticket = bindings.begin(lineID: job.lineID)
-            let target: RealtimeTranslationSocket.Target = line.sourceLanguage == .zh ? .fr : .zh
-            let socket = RealtimeTranslationSocket(target: target, backendBaseURL: backendURL,
-                noiseReduction: attempt == 0 ? "far_field" : nil)
-            do {
-                let text = try await socket.translate(audio16k: job.audio, personalAPIKey: apiKey) { [weak self] text in
-                    Task { @MainActor [weak self] in self?.updateTranslation(text, ticket: ticket, final: false) }
-                }
-                guard !Task.isCancelled, generation == recordGeneration else { return }
-                updateTranslation(text, ticket: ticket, final: true)
-                retryAudio.removeValue(forKey: job.lineID)
-                return
-            } catch {
-                guard !Task.isCancelled, generation == recordGeneration else { return }
-                bindings.finish(ticket)
-                // Retry an empty clip once without extra noise reduction; do
-                // not replay completed output or retry authentication errors.
-                if case RealtimeTranslationSocket.SocketError.emptyOutput = error, attempt == 0 {
-                    retryingIDs.insert(job.lineID)
-                    continue
-                }
-                if let index = lines.firstIndex(where: { $0.id == job.lineID }) {
-                    lines[index].translationError = error.localizedDescription
-                }
-                return
+            updateTranslation(text, ticket: ticket, final: true)
+        } catch {
+            guard !Task.isCancelled, generation == recordGeneration else { return }
+            bindings.finish(ticket)
+            if let index = lines.firstIndex(where: { $0.id == job.lineID }) {
+                lines[index].translationError = TextTranslationService.userMessage(for: error)
             }
         }
     }

@@ -74,6 +74,13 @@ struct ContentView: View {
             Text("识别范围：\(model.settings.recognitionLanguage.title)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Text("本地识别 → 文字翻译 · \(model.settings.translationModel.rawValue)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if !model.whisper.modelReady && !model.whisper.isPreparingModel {
+                Button("重试加载模型") { Task { await model.prepareModel() } }
+                    .font(.subheadline)
+            }
 
             if model.isRunning {
                 VStack(alignment: .leading, spacing: 5) {
@@ -113,7 +120,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(model.isRunning ? .red : .blue)
-            .disabled(model.isChangingState)
+            .disabled(model.isChangingState || model.whisper.isPreparingModel)
 
             if !model.lastError.isEmpty {
                 Text(model.lastError)

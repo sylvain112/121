@@ -5,6 +5,7 @@ final class AppSettings: ObservableObject {
     private enum Keys {
         static let apiKey = "openai-api-key"
         static let summaryModel = "zhfr.summary-model"
+        static let translationModel = "zhfr.translation-model"
         static let usePersonalAPI = "zhfr.use-personal-api"
         static let recognitionProfile = "zhfr.recognition-profile"
         static let recognitionLanguage = "zhfr.recognition-language"
@@ -13,6 +14,9 @@ final class AppSettings: ObservableObject {
     }
 
     @Published private(set) var hasPersonalAPIKey = false
+    @Published var translationModel: TranslationModel {
+        didSet { UserDefaults.standard.set(translationModel.rawValue, forKey: Keys.translationModel) }
+    }
     @Published var summaryModel: String {
         didSet { UserDefaults.standard.set(summaryModel, forKey: Keys.summaryModel) }
     }
@@ -33,6 +37,7 @@ final class AppSettings: ObservableObject {
     }
 
     init() {
+        translationModel = TranslationModel(rawValue: UserDefaults.standard.string(forKey: Keys.translationModel) ?? "") ?? .economy
         recognitionProfile = RecognitionProfile(rawValue: UserDefaults.standard.string(forKey: Keys.recognitionProfile) ?? "") ?? .fast
         recognitionLanguage = RecognitionLanguage(rawValue: UserDefaults.standard.string(forKey: Keys.recognitionLanguage) ?? "") ?? .automatic
         microphone = MicrophonePreference(rawValue: UserDefaults.standard.string(forKey: Keys.microphone) ?? "") ?? .phone

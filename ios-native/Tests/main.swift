@@ -158,4 +158,54 @@ expect(PhraseTranslator.translate("Merci !", from: .fr) == "谢谢！", "short p
 expect(PhraseTranslator.translate("是的？", from: .zh) == "Oui ?", "short Chinese question keeps its question mark")
 expect(PhraseTranslator.translate("Merci pour votre aide.", from: .fr) == nil, "longer sentences never use a partial dictionary match")
 expect(PhraseTranslator.translate("Merci. Merci.", from: .fr) == nil, "repeated real speech is not reduced to a single acknowledgement")
-print("\(passed) sentence, translation, display, language and audio regression checks passed.")
+do {
+    let manager = FileManager.default
+    let temporary = manager.temporaryDirectory.appendingPathComponent("ZHFR-cache-test-\(UUID())")
+    defer { try? manager.removeItem(at: temporary) }
+    let root = temporary.appendingPathComponent("ApplicationSupport")
+    let legacy = temporary.appendingPathComponent("old-huggingface")
+    let cache = LocalModelCache(root: root, legacyRoot: legacy)
+    try cache.prepareDirectories()
+    let model = cache.folder(for: .fast)
+    for component in ["MelSpectrogram", "AudioEncoder", "TextDecoder"] {
+        let directory = model.appendingPathComponent("\(component).mlmodelc")
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("complete fixture weights".utf8).write(to: directory.appendingPathComponent("weight.bin"))
+    }
+    let unverified = try cache.existingCandidate(for: .fast)
+    expect(unverified == model && cache.completedFolder(for: .fast) == nil, "interrupted or unverified model never becomes ready from folder presence")
+    do {
+        try cache.markCompleted(model, profile: .fast)
+        fatalError("Incomplete tokenizer should not receive a completion receipt")
+    } catch { expect(error is LocalModelCache.CacheError, "model without tokenizer cannot receive a completion receipt") }
+    let tokenizer = cache.tokenizerFolder(for: .fast)
+    try manager.createDirectory(at: tokenizer, withIntermediateDirectories: true)
+    for filename in ["tokenizer.json", "tokenizer_config.json", "config.json"] {
+        try Data("{}".utf8).write(to: tokenizer.appendingPathComponent(filename))
+    }
+    try cache.markCompleted(model, profile: .fast)
+    let cold = LocalModelCache(root: root, legacyRoot: legacy)
+    expect(cold.completedFolder(for: .fast) == model, "cold launch reuses a completed model and tokenizer")
+    try manager.removeItem(at: tokenizer)
+    expect(cold.completedFolder(for: .fast) == model, "completed cache includes its own tokenizer without a shared Hub directory")
+    expect(cold.completedFolder(for: .accurate) == nil, "separate model selections do not reuse another model's receipt")
+    let relocatedRoot = temporary.appendingPathComponent("new-app-container")
+    try manager.copyItem(at: root, to: relocatedRoot)
+    let relocated = LocalModelCache(root: relocatedRoot, legacyRoot: legacy)
+    expect(relocated.completedFolder(for: .fast) == relocated.folder(for: .fast), "relative receipt remains valid after an app-container move")
+    let damaged = model.appendingPathComponent("AudioEncoder.mlmodelc/weight.bin")
+    try Data("partial".utf8).write(to: damaged)
+    let invalidCandidate = try cold.existingCandidate(for: .fast)
+    expect(cold.completedFolder(for: .fast) == nil && invalidCandidate == nil, "truncated completed weights require repair instead of repeated load failure")
+    try cold.prepareRepair(for: .fast)
+    expect(!manager.fileExists(atPath: damaged.path) && manager.fileExists(atPath: model.appendingPathComponent("TextDecoder.mlmodelc/weight.bin").path), "repair removes truncated weights and retains intact files")
+    let oldModel = legacy.appendingPathComponent("models/argmaxinc/whisperkit-coreml/\(RecognitionProfile.fast.modelName)")
+    try manager.createDirectory(at: oldModel.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try manager.copyItem(at: relocated.folder(for: .fast), to: oldModel)
+    try manager.removeItem(at: oldModel.appendingPathComponent(".zhfr-complete.json"))
+    let migrated = LocalModelCache(root: temporary.appendingPathComponent("migrated"), legacyRoot: legacy)
+    try migrated.prepareDirectories()
+    let reused = try migrated.existingCandidate(for: .fast)
+    expect(reused == migrated.folder(for: .fast) && !manager.fileExists(atPath: oldModel.path), "v2.4 model files move into the persistent cache without another weight download")
+}
+print("\(passed) sentence, translation, display, language, audio and model-cache regression checks passed.")

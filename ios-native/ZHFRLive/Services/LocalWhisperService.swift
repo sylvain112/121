@@ -14,6 +14,7 @@ final class LocalWhisperService: ObservableObject {
     }
 
     @Published private(set) var modelReady = false
+    @Published private(set) var isPreparingModel = false
     @Published private(set) var modelStatus = "尚未加载本地模型"
     @Published private(set) var liveText = ""
     @Published private(set) var inputDescription = "优先手机麦克风"
@@ -22,7 +23,7 @@ final class LocalWhisperService: ObservableObject {
     @Published private(set) var isDecoding = false
     var onTextChanged: ((String) -> Void)?
     var onAudioChunk: (([Float]) -> Void)?
-    var onSentence: ((RecognizedSentence, [Float]) -> Void)?
+    var onSentence: ((RecognizedSentence) -> Void)?
     var onError: ((String) -> Void)?
 
     private let microphone = MicrophoneCapture()
@@ -50,33 +51,101 @@ final class LocalWhisperService: ObservableObject {
     func prepare(profile: RecognitionProfile) async throws {
         let modelName = profile.modelName
         guard !modelReady || loadedModel != modelName else { return }
-        if let existing = preparationTask, preparingModel != modelName {
-            _ = try? await existing.value
-            // The owner of the shared task publishes/clears it on the main actor.
-            await Task.yield()
-            try await prepare(profile: profile)
+        if let existing = preparationTask {
+            if preparingModel == modelName { _ = try await existing.value }
+            else {
+                _ = try? await existing.value
+                try await prepare(profile: profile)
+            }
             return
         }
         modelReady = false
-        modelStatus = "正在下载 / 加载\(profile.title)本地模型…"
-        let task: Task<WhisperKit, Error>
-        if let existing = preparationTask { task = existing }
-        else {
-            whisperKit = nil
-            loadedModel = nil
-            let config = WhisperKitConfig(model: modelName, verbose: false, prewarm: true, load: true,
-                download: true, useBackgroundDownloadSession: true)
-            task = Task { try await WhisperKit(config) }
-            preparationTask = task
-            preparingModel = modelName
+        isPreparingModel = true
+        preparingModel = modelName
+        whisperKit = nil
+        loadedModel = nil
+        let task = Task<WhisperKit, Error> { [self] in
+            defer {
+                isPreparingModel = false
+                preparationTask = nil
+                preparingModel = nil
+            }
+            do {
+                let cache = LocalModelCache()
+                try cache.prepareDirectories()
+                let complete = cache.completedFolder(for: profile)
+                let existing = try complete ?? cache.existingCandidate(for: profile)
+                var folder: URL
+                if let existing {
+                    folder = existing
+                    modelStatus = "正在加载已保存模型 · \(profile.description)…"
+                } else {
+                    try cache.prepareRepair(for: profile)
+                    folder = try await downloadModel(profile, cache: cache)
+                }
+                let pipeline: WhisperKit
+                do {
+                    pipeline = try await loadModel(profile, folder: folder, cache: cache, completed: complete != nil)
+                } catch {
+                    guard complete == nil, existing != nil, !Task.isCancelled else { throw error }
+                    // A v2.4 or interrupted cache is not considered complete
+                    // until the actual model load succeeds. Repair it once.
+                    folder = try await downloadModel(profile, cache: cache)
+                    pipeline = try await loadModel(profile, folder: folder, cache: cache, completed: false)
+                }
+                try BilingualWhisperConfiguration.restrict(pipeline)
+                if complete == nil { try cache.markCompleted(folder, profile: profile) }
+                whisperKit = pipeline
+                loadedModel = modelName
+                modelReady = true
+                modelStatus = "本地模型已保存 · \(profile.description)"
+                return pipeline
+            } catch {
+                modelStatus = "本地模型准备失败，可重试"
+                let detail = error.localizedDescription
+                if detail.contains("NSURLErrorDomain") || error is URLError {
+                    throw PreparationError.downloadInterrupted
+                }
+                if let error = error as? LocalModelCache.CacheError { throw error }
+                throw PreparationError.loadingFailed
+            }
         }
-        defer { preparationTask = nil; preparingModel = nil }
-        let pipeline = try await task.value
-        try BilingualWhisperConfiguration.restrict(pipeline)
-        whisperKit = pipeline
-        loadedModel = modelName
-        modelReady = true
-        modelStatus = "\(profile.title)本地模型已就绪 · \(modelName)"
+        preparationTask = task
+        _ = try await task.value
+    }
+
+    private func downloadModel(_ profile: RecognitionProfile, cache: LocalModelCache) async throws -> URL {
+        modelStatus = "下载或修复 · \(profile.description)…请保持 App 在前台"
+        let folder = try await WhisperKit.download(variant: profile.modelName, downloadBase: cache.root,
+            useBackgroundSession: false) { [weak self] progress in
+            let percent = Int(progress.fractionCompleted * 100)
+            Task { @MainActor [weak self] in
+                guard let self, self.preparingModel == profile.modelName,
+                      self.modelStatus.hasPrefix("下载或修复") else { return }
+                self.modelStatus = "下载或修复 · \(profile.description) · \(percent)%"
+            }
+        }
+        modelStatus = "文件已下载，正在加载 · \(profile.description)…"
+        return folder
+    }
+
+    private func loadModel(_ profile: RecognitionProfile, folder: URL, cache: LocalModelCache,
+                           completed: Bool) async throws -> WhisperKit {
+        let config = WhisperKitConfig(model: profile.modelName, downloadBase: cache.root,
+            modelFolder: folder.path, tokenizerFolder: completed ? folder : cache.root,
+            verbose: false, prewarm: true, load: true, download: false,
+            useBackgroundDownloadSession: false)
+        return try await WhisperKit(config)
+    }
+
+    enum PreparationError: LocalizedError {
+        case downloadInterrupted, loadingFailed
+        var errorDescription: String? {
+            switch self {
+            case .downloadInterrupted: return "模型下载未完成。请检查网络并保持 App 在前台，然后点击重试；已下载文件会保留。"
+            case .loadingFailed: return "本地模型加载失败。请重试或在设置中切换模型。"
+            }
+        }
     }
 
     func start(language: RecognitionLanguage, microphonePreference: MicrophonePreference, boost: Bool) async throws {
@@ -236,20 +305,12 @@ final class LocalWhisperService: ObservableObject {
             return [TimedWord(text: SentenceAssembler.clean(segment.text), start: offset + Double(segment.start), end: offset + Double(segment.end))]
         }.compactMap { $0.bounded(from: offset, to: snapshot.endTime) }
             .filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        var previousEnd = assembler.consumedThrough
         // Word timestamps supply a second pause signal when background noise
         // keeps the microphone energy detector active after speech has ended.
         let wordSilence = words.last.map { max(0, snapshot.endTime - $0.end) } ?? 0
         let sentences = assembler.update(words: words, silenceDuration: max(silenceDuration, wordSilence),
             force: force, audioEnd: snapshot.endTime)
-        for (index, sentence) in sentences.enumerated() {
-            let nextStart = index + 1 < sentences.count ? sentences[index + 1].start : snapshot.endTime
-            let audio = snapshot.audio(from: max(previousEnd, sentence.start - 0.12),
-                                       to: min(nextStart, sentence.end + 0.18))
-            previousEnd = sentence.end
-            guard !audio.isEmpty else { continue }
-            onSentence?(sentence, audio)
-        }
+        for sentence in sentences { onSentence?(sentence) }
         // Invalidate delayed progress callbacks before publishing the final tail.
         activeDecodeID = nil
         liveText = assembler.liveText

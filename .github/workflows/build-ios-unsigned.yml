@@ -6,6 +6,7 @@ on:
     branches: [main, 'codex/zhfr-*']
     paths:
       - 'ios-native/**'
+      - 'api/translate.js'
       - '.github/workflows/build-ios-unsigned.yml'
 
 jobs:
@@ -37,9 +38,28 @@ jobs:
             ZHFRLive/Services/MicrophoneSignalProcessor.swift \
             ZHFRLive/Services/TranscriptWindow.swift \
             ZHFRLive/Services/PhraseTranslator.swift \
+            ZHFRLive/Services/RecognitionOptions.swift \
+            ZHFRLive/Services/LocalModelCache.swift \
             Tests/main.swift \
             -o "$RUNNER_TEMP/zhfr-sentence-tests"
           "$RUNNER_TEMP/zhfr-sentence-tests"
+
+      - name: Check text-only translation and failure handling
+        working-directory: ios-native
+        run: |
+          node Tests/translate-backend.mjs
+          swiftc -parse-as-library \
+            ZHFRLive/Models/TranscriptLine.swift \
+            ZHFRLive/Services/TextTranslationService.swift \
+            Tests/TextTranslationSmoke.swift \
+            -o "$RUNNER_TEMP/zhfr-text-translation-tests"
+          "$RUNNER_TEMP/zhfr-text-translation-tests"
+
+      - name: Check deployed text translation in both directions
+        if: contains(github.event.head_commit.message, '[check-text-translation]')
+        env:
+          ZHFR_CHECK_TEXT_TRANSLATION: '1'
+        run: '"$RUNNER_TEMP/zhfr-text-translation-tests"'
 
       - name: Check actual bilingual speech and live translation
         if: contains(github.event.head_commit.message, '[check-bilingual-asr]')
