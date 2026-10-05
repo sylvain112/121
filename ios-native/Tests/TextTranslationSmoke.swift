@@ -39,7 +39,7 @@ struct TranslationSmoke {
         let service = TextTranslationService(backendBaseURL: URL(string: "https://example.invalid")!, session: session)
         func check(_ value: Bool, _ name: String) { if !value { fatalError("FAIL: \(name)") }; print("PASS: \(name)") }
         MockTranslationProtocol.handler = { request in
-            let body = try body(of: request)
+            let body = try Self.body(of: request)
             check(request.url?.path == "/v1/responses", "personal key uses text Responses API")
             check(body["input"] as? String == "Le semestre a été difficile.", "exact original is translated")
             check(body["audio"] == nil && body["transcription"] == nil, "no audio or paid transcription is submitted")
@@ -49,7 +49,7 @@ struct TranslationSmoke {
         let french = try await service.translate(original: "Le semestre a été difficile.", from: .fr, model: .economy, apiKey: "test-key")
         check(french == "这个学期很难。", "French translation is parsed from output messages")
         MockTranslationProtocol.handler = { request in
-            let body = try body(of: request)
+            let body = try Self.body(of: request)
             check(request.url?.path == "/api/translate", "missing personal key uses text backend")
             check(body["sourceLang"] as? String == "zh", "backend receives the identified source language")
             return (200, Data(#"{"translation":"Je suis étudiant.","model":"gpt-4o-mini"}"#.utf8))
