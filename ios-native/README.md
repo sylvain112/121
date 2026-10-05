@@ -40,7 +40,7 @@ open ZHFRLive.xcodeproj
 
 `Tests/main.swift` 覆盖稳定及快速断句、草稿修订、真实重复句、双语切换、音频时钟、事件去重、回复乱序与重试隔离、四句窗口、背景静音、持续弱声、突发强声、直流偏移、语言过滤、未来时间戳及短句本地翻译。常规回归测试使用生成的信号，不调用付费 API，不下载模型。
 
-`Tests/run-language-smoke.sh` 在 macOS 上合成中法语音，下载实际 base 模型并运行与 App 相同的识别配置、语言限制、增益和时间戳处理。设置 `ZHFR_CHECK_LIVE_TRANSLATION=1` 时，同时检查现有后端的中法实时翻译。CI 仅在提交消息含 `[check-bilingual-asr]` 时执行这一下载模型及联网的检查。
+`Tests/run-language-smoke.sh` 在 macOS 上合成中法语音，下载实际 base 模型，检查语言限制及现有后端的中法实时翻译。使用 OpenAI Whisper 的独立自然语音样本验证未修改的 SDK；只有这个基准成功，才继续运行 App 的语音质量检查。Mac 运行环境若连基准都未正确识别，会明确输出 `INCONCLUSIVE ASR`，不能将其算作识别质量通过。CI 仅在提交消息含 `[check-bilingual-asr]` 时执行这一下载模型及联网的检查，联网翻译由 `ZHFR_CHECK_LIVE_TRANSLATION=1` 启用。
 
 Mac 的合成语音检查不能验证实际 iPhone 麦克风、教室噪声或真机速度。真机需检查：
 
