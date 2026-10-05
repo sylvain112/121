@@ -9,9 +9,13 @@ on:
       - 'api/translate.js'
       - '.github/workflows/build-ios-unsigned.yml'
 
+concurrency:
+  group: zhfr-ios-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 45
 
     steps:
