@@ -28,4 +28,8 @@ if [ -z "$FRENCH_VOICE" ] || [ -z "$CHINESE_VOICE" ]; then
 fi
 /usr/bin/say -v "$FRENCH_VOICE" -r 145 -o "$SMOKE_DIR/audio/fr.aiff" "Bonjour. Je m'appelle Marie. J'étudie l'informatique à Poitiers."
 /usr/bin/say -v "$CHINESE_VOICE" -r 145 -o "$SMOKE_DIR/audio/zh.aiff" '今天是星期一。我在法国学习计算机。'
+# Feed exactly the format recorded by the app. Avoid the SDK file-resampling
+# path: the app uses its own AVAudioConverter before Whisper sees any audio.
+/usr/bin/afconvert -f WAVE -d LEI16@16000 -c 1 "$SMOKE_DIR/audio/fr.aiff" "$SMOKE_DIR/audio/fr.wav"
+/usr/bin/afconvert -f WAVE -d LEI16@16000 -c 1 "$SMOKE_DIR/audio/zh.aiff" "$SMOKE_DIR/audio/zh.wav"
 swift run --package-path "$SMOKE_DIR" -c release ZHFRSmoke "$SMOKE_DIR/audio"

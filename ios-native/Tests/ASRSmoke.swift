@@ -42,7 +42,7 @@ do {
     let pipeline = try await WhisperKit(WhisperKitConfig(model: "openai_whisper-base", verbose: false,
         prewarm: true, load: true, download: true))
     print("MODEL: multilingual=\(pipeline.textDecoder.isModelMultilingual), logits=\(pipeline.textDecoder.logitsSize ?? 0)")
-    let diagnosticAudio = try processedAudio(path: "\(directory)/fr.aiff")
+    let diagnosticAudio = try processedAudio(path: "\(directory)/fr.wav")
     let baseline = try await pipeline.transcribe(audioArray: diagnosticAudio,
         decodeOptions: BilingualWhisperConfiguration.options(language: .french, final: true))
     print("BASELINE fixed fr: \(baseline.map(\.text).joined()) language=\(baseline.map(\.language)), segments=\(baseline.flatMap(\.segments).count)")
@@ -53,7 +53,7 @@ do {
     try require(!tokenizer.blockedLanguageTokens.isEmpty, "Other Whisper languages must be suppressed")
 
     for source in [TranscriptLine.SourceLanguage.fr, .zh] {
-        let audio = try processedAudio(path: "\(directory)/\(source.rawValue).aiff")
+        let audio = try processedAudio(path: "\(directory)/\(source.rawValue).wav")
         let start = Date()
         let results = try await pipeline.transcribe(audioArray: audio,
             decodeOptions: BilingualWhisperConfiguration.options(language: .automatic, final: true),
