@@ -45,9 +45,10 @@ do {
         prewarm: true, load: true, download: true))
     print("MODEL: CPU-only runner check; multilingual=\(pipeline.textDecoder.isModelMultilingual), logits=\(pipeline.textDecoder.logitsSize ?? 0)")
     let diagnosticAudio = try processedAudio(path: "\(directory)/fr.wav")
-    if ProcessInfo.processInfo.environment["ZHFR_CHECK_LIVE_TRANSLATION"] == "1" {
-        try await checkTranslation(audio: diagnosticAudio, source: .fr)
-    }
+    let rawAudio = try AudioProcessor.loadAudioAsFloatArray(fromPath: "\(directory)/fr.wav")
+    let stock = try await pipeline.transcribe(audioArray: rawAudio,
+        decodeOptions: DecodingOptions(language: "fr", skipSpecialTokens: true))
+    print("STOCK raw fixed fr: \(stock.map(\.text).joined()) language=\(stock.map(\.language)), segments=\(stock.flatMap(\.segments).count)")
     let baseline = try await pipeline.transcribe(audioArray: diagnosticAudio,
         decodeOptions: BilingualWhisperConfiguration.options(language: .french, final: true))
     print("BASELINE fixed fr: \(baseline.map(\.text).joined()) language=\(baseline.map(\.language)), segments=\(baseline.flatMap(\.segments).count)")
@@ -83,7 +84,7 @@ do {
         try require(assembler.consumedThrough <= duration, "Actual ASR timestamps skipped beyond the recording")
         try require(sentences.allSatisfy { $0.sourceLanguage == source }, "Actual ASR sentence language differs from the source")
 
-        if source == .zh, ProcessInfo.processInfo.environment["ZHFR_CHECK_LIVE_TRANSLATION"] == "1" {
+        if ProcessInfo.processInfo.environment["ZHFR_CHECK_LIVE_TRANSLATION"] == "1" {
             try await checkTranslation(audio: audio, source: source)
         }
     }

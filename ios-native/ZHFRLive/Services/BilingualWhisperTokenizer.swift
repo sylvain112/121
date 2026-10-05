@@ -17,7 +17,9 @@ enum BilingualWhisperConfiguration {
         DecodingOptions(task: .transcribe, language: language.code,
             temperatureFallbackCount: 0, sampleLength: 128,
             usePrefillPrompt: true, detectLanguage: language == .automatic,
-            skipSpecialTokens: true, withoutTimestamps: false, wordTimestamps: true,
+            // Align words after decoding instead of sampling timestamp tokens.
+            // This avoids timestamp-only output while preserving audio slices.
+            skipSpecialTokens: true, withoutTimestamps: true, wordTimestamps: true,
             clipTimestamps: [Float(max(0, clipStart))], windowClipTime: final ? 0 : 0.15,
             // The SDK's first-token threshold normally triggers a warmer
             // retry. With retries disabled it can stop before producing any
