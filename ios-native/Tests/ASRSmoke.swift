@@ -41,6 +41,11 @@ do {
     let directory = CommandLine.arguments[1]
     let pipeline = try await WhisperKit(WhisperKitConfig(model: "openai_whisper-base", verbose: false,
         prewarm: true, load: true, download: true))
+    print("MODEL: multilingual=\(pipeline.textDecoder.isModelMultilingual), logits=\(pipeline.textDecoder.logitsSize ?? 0)")
+    let diagnosticAudio = try processedAudio(path: "\(directory)/fr.aiff")
+    let baseline = try await pipeline.transcribe(audioArray: diagnosticAudio,
+        decodeOptions: BilingualWhisperConfiguration.options(language: .french, final: true))
+    print("BASELINE fixed fr: \(baseline.map(\.text).joined()) language=\(baseline.map(\.language)), segments=\(baseline.flatMap(\.segments).count)")
     try BilingualWhisperConfiguration.restrict(pipeline)
     let tokenizer = pipeline.tokenizer as! BilingualWhisperTokenizer
     let allowed = Set([tokenizer.convertTokenToId("<|fr|>")!, tokenizer.convertTokenToId("<|zh|>")!])
@@ -51,7 +56,11 @@ do {
         let audio = try processedAudio(path: "\(directory)/\(source.rawValue).aiff")
         let start = Date()
         let results = try await pipeline.transcribe(audioArray: audio,
-            decodeOptions: BilingualWhisperConfiguration.options(language: .automatic, final: true))
+            decodeOptions: BilingualWhisperConfiguration.options(language: .automatic, final: true),
+            callback: { progress in
+                if progress.tokens.count <= 7 { print("TOKENS: \(progress.tokens), text=\(progress.text)") }
+                return nil
+            })
         let text = SentenceAssembler.clean(results.map(\.text).joined(separator: " "))
         print("ASR \(source.rawValue): \(text) [\(String(format: "%.2f", Date().timeIntervalSince(start))) s, Mac runner; language=\(results.map(\.language)), segments=\(results.flatMap(\.segments).count)]")
         try require(!results.isEmpty && results.allSatisfy { $0.language == source.rawValue }, "Bilingual ASR detected an unexpected language")
