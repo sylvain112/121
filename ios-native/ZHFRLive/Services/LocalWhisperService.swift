@@ -26,6 +26,8 @@ final class LocalWhisperService: ObservableObject {
     private var whisperKit: WhisperKit?
     private var preparationTask: Task<WhisperKit, Error>?
     private var transcriptionTask: Task<Void, Never>?
+    private var audioTask: Task<Void, Never>?
+    private var audioContinuation: AsyncStream<[Float]>.Continuation?
     private var audioBuffer = SentenceAudioBuffer()
     private var assembler = SentenceAssembler()
     private var isRecording = false
@@ -65,20 +67,29 @@ final class LocalWhisperService: ObservableObject {
         transcriptGeneration = UUID()
         recordingGeneration = UUID()
         let generation = recordingGeneration
+        let stream = AsyncStream<[Float]>.makeStream()
+        audioContinuation = stream.continuation
+        audioTask = Task { [weak self] in
+            for await chunk in stream.stream {
+                guard let self, self.recordingGeneration == generation else { return }
+                self.receiveAudio(chunk)
+            }
+        }
         isRecording = true
         do {
             // Keep the callback installed from the first microphone frame.
-            try processor.startRecordingLive { [weak self, weak processor] chunk in
+            try processor.startRecordingLive { [weak processor] chunk in
                 // Purge on the capture callback's own thread, not concurrently
                 // with AudioProcessor appending to its buffer.
                 processor?.purgeAudioSamples(keepingLast: SentenceAudioBuffer.sampleRate * 2)
-                Task { @MainActor [weak self] in
-                    guard let self, self.isRecording, self.recordingGeneration == generation else { return }
-                    self.receiveAudio(chunk)
-                }
+                stream.continuation.yield(chunk)
             }
         } catch {
             isRecording = false
+            stream.continuation.finish()
+            await audioTask?.value
+            audioTask = nil
+            audioContinuation = nil
             throw error
         }
         transcriptionTask = Task { [weak self] in
@@ -103,6 +114,10 @@ final class LocalWhisperService: ObservableObject {
     func stop() async {
         isRecording = false
         whisperKit?.audioProcessor.stopRecording()
+        audioContinuation?.finish()
+        await audioTask?.value
+        audioTask = nil
+        audioContinuation = nil
         // Model state is shared, so wait before doing the final local decode.
         await transcriptionTask?.value
         transcriptionTask = nil
