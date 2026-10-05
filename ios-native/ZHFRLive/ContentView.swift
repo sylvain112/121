@@ -91,6 +91,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(model.isRunning ? .red : .blue)
+            .disabled(model.isChangingState)
 
             if !model.lastError.isEmpty {
                 Text(model.lastError)
@@ -117,65 +118,41 @@ struct ContentView: View {
                         .background(.thinMaterial, in: Capsule())
                 }
             }
-
             ScrollView(.vertical, showsIndicators: true) {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 9) {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(model.isRunning ? Color.green : Color.secondary)
-                                .frame(width: 7, height: 7)
-                            Text("实时")
-                                .font(.subheadline.bold())
-                        }
-
-                        Text("原文 · 本地 Whisper")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(model.liveSource.isEmpty ? "等待讲话…" : model.liveSource)
-                            .font(.title3)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-
-                        Text("译文")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 3)
-                        Text(model.liveTranslation.isEmpty ? "等待实时译文…" : model.liveTranslation)
-                            .font(.title3.weight(.semibold))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                    }
-
-                    Divider()
-
-                    Text("文字记录")
-                        .font(.subheadline.bold())
-
                     if model.lines.isEmpty {
-                        Text("完成的分段记录会出现在这里。上下拖动此区域即可查看全部内容。")
+                        Text(model.isRunning ? "正在听取讲话，完整译句会显示在这里…" : "开始同传后，译文会按顺序显示在这里。")
                             .foregroundStyle(.secondary)
                             .font(.subheadline)
-                    } else {
-                        ForEach(model.lines) { line in
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(line.sourceLanguage == .zh ? "中文 → Français" : "Français → 中文")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(.secondary)
-                                Text(line.original)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
+                    }
+                    ForEach(model.lines) { line in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(line.sourceLanguage == .zh ? "中文 → Français" : "Français → 中文")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            if !line.translation.isEmpty {
                                 Text(line.translation)
                                     .font(.body.weight(.medium))
                                     .textSelection(.enabled)
+                            } else if line.translationError == nil {
+                                HStack(spacing: 8) {
+                                    ProgressView().controlSize(.small)
+                                    Text("正在生成译文…").foregroundStyle(.secondary)
+                                }
                             }
-                            .padding(.vertical, 3)
-
-                            if line.id != model.lines.last?.id {
-                                Divider()
+                            if let message = line.translationError {
+                                Text(message).font(.caption).foregroundStyle(.red)
+                                Button("重试这句翻译") { model.retryTranslation(line.id) }
+                                    .font(.caption.bold())
                             }
                         }
+                        .padding(.vertical, 3)
+                        if line.id != model.lines.last?.id { Divider() }
+                    }
+                    if model.isRunning && !model.liveSource.isEmpty {
+                        Text("正在识别下一句…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

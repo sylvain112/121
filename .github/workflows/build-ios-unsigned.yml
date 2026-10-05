@@ -3,7 +3,7 @@ name: Build unsigned iOS IPA
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'codex/zhfr-*']
     paths:
       - 'ios-native/**'
       - '.github/workflows/build-ios-unsigned.yml'
@@ -24,6 +24,19 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Check sentence recording regressions
+        working-directory: ios-native
+        run: |
+          swiftc \
+            ZHFRLive/Models/TranscriptLine.swift \
+            ZHFRLive/Services/LanguageDetector.swift \
+            ZHFRLive/Services/SentenceAssembler.swift \
+            ZHFRLive/Services/TranslationEventBuffer.swift \
+            ZHFRLive/Services/TranslationBindings.swift \
+            Tests/main.swift \
+            -o "$RUNNER_TEMP/zhfr-sentence-tests"
+          "$RUNNER_TEMP/zhfr-sentence-tests"
 
       - name: Generate Xcode project
         working-directory: ios-native

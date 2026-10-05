@@ -15,7 +15,7 @@ enum LanguageDetector {
         }.count
 
         if hanCount >= 1 { return .zh }
-        if latinCount >= 3 { return .fr }
+        if latinCount >= 1 { return .fr }
         return nil
     }
 }

@@ -1,46 +1,33 @@
 import Foundation
 
+/// One socket translates one identified sentence's audio. Continuous streams
+/// do not expose sentence IDs, so they cannot safely bind independent ASR rows.
 actor RealtimeTranslationSocket {
-    enum Target: String {
-        case fr
-        case zh
-    }
-
+    enum Target: String { case fr, zh }
     enum SocketError: LocalizedError {
-        case invalidBackendURL
-        case sessionCreationFailed(String)
-        case missingSecret
-        case invalidResponse
-        case connectionTimeout
-
+        case invalidResponse, missingSecret, connectionTimeout, outputTimeout, emptyOutput
+        case requestFailed(String)
         var errorDescription: String? {
             switch self {
-            case .invalidBackendURL:
-                return "无效的后端地址。"
-            case .sessionCreationFailed(let message):
-                return "创建翻译会话失败：\(message)"
-            case .missingSecret:
-                return "后端没有返回临时密钥。"
-            case .invalidResponse:
-                return "后端返回格式无效。"
-            case .connectionTimeout:
-                return "实时翻译连接超时。"
+            case .invalidResponse: return "翻译服务器返回格式无效。"
+            case .missingSecret: return "后端没有返回临时密钥。"
+            case .connectionTimeout: return "实时翻译连接超时。"
+            case .outputTimeout: return "等待这句话的最终译文超时，请重试。"
+            case .emptyOutput: return "这句话没有收到译文，请重试。"
+            case .requestFailed(let message): return message
             }
         }
     }
-
-    private struct SessionResponse: Decodable {
-        let client_secret: String?
-        let error: String?
-    }
-
+    private struct SessionResponse: Decodable { let client_secret: String?; let error: String? }
     private let target: Target
     private let backendBaseURL: URL
     private var webSocket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var deltaHandler: (@Sendable (String) -> Void)?
-    private var errorHandler: (@Sendable (String) -> Void)?
+    private var events = TranslationEventBuffer()
     private var ready = false
+    private var closed = false
+    private var failure: String?
     private var usingDirectAPIKey = false
 
     init(target: Target, backendBaseURL: URL) {
@@ -48,183 +35,121 @@ actor RealtimeTranslationSocket {
         self.backendBaseURL = backendBaseURL
     }
 
-    func setHandlers(
-        onDelta: @escaping @Sendable (String) -> Void,
-        onError: @escaping @Sendable (String) -> Void
-    ) {
+    func translate(
+        audio16k: [Float], personalAPIKey: String?,
+        onDelta: @escaping @Sendable (String) -> Void
+    ) async throws -> String {
         deltaHandler = onDelta
-        errorHandler = onError
+        do {
+            try await connect(personalAPIKey: personalAPIKey)
+            // Bounded WebSocket messages; preserve the sample order.
+            for start in stride(from: 0, to: audio16k.count, by: 3_200) {
+                try Task.checkCancellation()
+                try await sendAudio16k(Array(audio16k[start..<min(start + 3_200, audio16k.count)]))
+            }
+            try await sendAudio16k([Float](repeating: 0, count: 9_600))
+            try await send(["type": "session.close"])
+            // session.close flushes pending translation. Closing the transport
+            // immediately would lose the final words of the sentence.
+            for _ in 0..<300 {
+                try Task.checkCancellation()
+                if let failure { throw SocketError.requestFailed(failure) }
+                if closed {
+                    let text = events.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty else { throw SocketError.emptyOutput }
+                    disconnect()
+                    return text
+                }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            throw SocketError.outputTimeout
+        } catch {
+            disconnect()
+            throw error
+        }
     }
 
-    func connect(personalAPIKey: String? = nil) async throws {
-        disconnect()
-        ready = false
-
-        let trimmed = personalAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    private func connect(personalAPIKey: String?) async throws {
+        let key = personalAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        usingDirectAPIKey = !key.isEmpty
         let credential: String
-        if !trimmed.isEmpty {
-            credential = trimmed
-            usingDirectAPIKey = true
-        } else {
-            credential = try await createEphemeralSecret()
-            usingDirectAPIKey = false
-        }
-
-        guard let wsURL = URL(string: "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate") else {
-            throw SocketError.invalidBackendURL
-        }
-
-        var request = URLRequest(url: wsURL)
+        if usingDirectAPIKey { credential = key }
+        else { credential = try await createEphemeralSecret() }
+        let url = URL(string: "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate")!
+        var request = URLRequest(url: url)
         request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
         request.setValue("zhfr-live-ios", forHTTPHeaderField: "OpenAI-Safety-Identifier")
-
         let socket = URLSession.shared.webSocketTask(with: request)
         webSocket = socket
         socket.resume()
-        receiveTask = Task { [weak self] in
-            await self?.receiveLoop()
-        }
-
+        receiveTask = Task { [weak self] in await self?.receiveLoop(socket: socket) }
         for _ in 0..<120 {
+            try Task.checkCancellation()
+            if let failure { throw SocketError.requestFailed(failure) }
             if ready { return }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         throw SocketError.connectionTimeout
     }
 
-    func disconnect() {
-        ready = false
+    private func disconnect() {
         receiveTask?.cancel()
         receiveTask = nil
         webSocket?.cancel(with: .normalClosure, reason: nil)
         webSocket = nil
     }
 
-    func sendAudio16k(_ samples: [Float]) async {
-        guard ready, !samples.isEmpty, let webSocket else { return }
-        let audio = PCMConverter.float16kToPCM16Base64_24k(samples)
-        guard !audio.isEmpty else { return }
-
-        let payload: [String: Any] = [
-            "type": "session.input_audio_buffer.append",
-            "audio": audio
-        ]
-
-        guard
-            let data = try? JSONSerialization.data(withJSONObject: payload),
-            let json = String(data: data, encoding: .utf8)
-        else { return }
-
-        do {
-            try await webSocket.send(.string(json))
-        } catch {
-            errorHandler?("\(target.rawValue.uppercased()) 音频发送失败：\(error.localizedDescription)")
-        }
+    private func sendAudio16k(_ samples: [Float]) async throws {
+        if let failure { throw SocketError.requestFailed(failure) }
+        try await send(["type": "session.input_audio_buffer.append", "audio": PCMConverter.float16kToPCM16Base64_24k(samples)])
     }
 
-    private func createEphemeralSecret() async throws -> String {
-        let url = backendBaseURL.appending(path: "api/session")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "target": target.rawValue,
-            "transcribe": false
-        ])
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw SocketError.invalidResponse
-        }
-
-        let decoded = try? JSONDecoder().decode(SessionResponse.self, from: data)
-        guard (200..<300).contains(http.statusCode) else {
-            throw SocketError.sessionCreationFailed(decoded?.error ?? "HTTP \(http.statusCode)")
-        }
-
-        guard let secret = decoded?.client_secret, !secret.isEmpty else {
-            throw SocketError.missingSecret
-        }
-        return secret
-    }
-
-    private func sendSessionUpdateIfNeeded() async throws {
-        guard usingDirectAPIKey, let webSocket else {
-            ready = true
-            return
-        }
-        let payload: [String: Any] = [
-            "type": "session.update",
-            "session": [
-                "audio": [
-                    "input": [
-                        "noise_reduction": ["type": "near_field"]
-                    ],
-                    "output": ["language": target.rawValue]
-                ]
-            ]
-        ]
+    private func send(_ payload: [String: Any]) async throws {
+        guard let webSocket else { throw SocketError.invalidResponse }
         let data = try JSONSerialization.data(withJSONObject: payload)
         guard let json = String(data: data, encoding: .utf8) else { throw SocketError.invalidResponse }
         try await webSocket.send(.string(json))
-        ready = true
     }
 
-    private func receiveLoop() async {
-        guard let webSocket else { return }
+    private func createEphemeralSecret() async throws -> String {
+        var request = URLRequest(url: backendBaseURL.appending(path: "api/session"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["target": target.rawValue, "transcribe": false])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw SocketError.invalidResponse }
+        let decoded = try? JSONDecoder().decode(SessionResponse.self, from: data)
+        guard (200..<300).contains(http.statusCode) else { throw SocketError.requestFailed(decoded?.error ?? "HTTP \(http.statusCode)") }
+        guard let secret = decoded?.client_secret, !secret.isEmpty else { throw SocketError.missingSecret }
+        return secret
+    }
 
+    private func receiveLoop(socket: URLSessionWebSocketTask) async {
         while !Task.isCancelled {
             do {
-                let message = try await webSocket.receive()
-                let text: String
+                let message = try await socket.receive()
+                let json: String
                 switch message {
-                case .string(let value):
-                    text = value
-                case .data(let data):
-                    text = String(data: data, encoding: .utf8) ?? ""
-                @unknown default:
-                    continue
+                case .string(let value): json = value
+                case .data(let data): json = String(data: data, encoding: .utf8) ?? ""
+                @unknown default: continue
                 }
-                await handleEvent(text)
-            } catch {
-                if !Task.isCancelled {
-                    errorHandler?("\(target.rawValue.uppercased()) 通道断开：\(error.localizedDescription)")
+                switch events.ingest(json) {
+                case .created:
+                    if usingDirectAPIKey {
+                        try await send(["type": "session.update", "session": ["audio": ["input": ["noise_reduction": ["type": "near_field"]], "output": ["language": target.rawValue]]]])
+                    } else { ready = true }
+                case .updated: ready = true
+                case .transcript(let text): deltaHandler?(text)
+                case .closed: closed = true; return
+                case .error(let message): failure = message; return
+                case .ignored: break
                 }
-                break
-            }
-        }
-    }
-
-    private func handleEvent(_ json: String) async {
-        guard
-            let data = json.data(using: .utf8),
-            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let type = object["type"] as? String
-        else { return }
-
-        if type == "session.created" {
-            do {
-                try await sendSessionUpdateIfNeeded()
             } catch {
-                errorHandler?("\(target.rawValue.uppercased()) 会话配置失败：\(error.localizedDescription)")
+                if !Task.isCancelled && !closed { failure = error.localizedDescription }
+                return
             }
-            return
-        }
-
-        if type == "session.updated" {
-            ready = true
-            return
-        }
-
-        if type == "session.output_transcript.delta", let delta = object["delta"] as? String {
-            deltaHandler?(delta)
-            return
-        }
-
-        if type == "error" {
-            let errorObject = object["error"] as? [String: Any]
-            let message = errorObject?["message"] as? String ?? "Realtime Translation error"
-            errorHandler?("\(target.rawValue.uppercased())：\(message)")
         }
     }
 }

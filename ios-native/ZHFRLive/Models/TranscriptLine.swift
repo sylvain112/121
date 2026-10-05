@@ -1,7 +1,7 @@
 import Foundation
 
 struct TranscriptLine: Identifiable, Codable, Equatable {
-    enum SourceLanguage: String, Codable {
+    enum SourceLanguage: String, Codable, Sendable {
         case zh
         case fr
     }
@@ -10,7 +10,8 @@ struct TranscriptLine: Identifiable, Codable, Equatable {
     let createdAt: Date
     let sourceLanguage: SourceLanguage
     let original: String
-    let translation: String
+    var translation: String
+    var translationError: String?
 
     init(
         id: UUID = UUID(),
