@@ -4,6 +4,14 @@ struct TimedWord: Equatable, Sendable {
     let text: String
     let start: Double
     let end: Double
+
+    func bounded(from audioStart: Double, to audioEnd: Double) -> TimedWord? {
+        guard start.isFinite, end.isFinite, end >= start, end > audioStart, start < audioEnd else { return nil }
+        let lower = max(audioStart, start)
+        let upper = min(audioEnd, max(end, lower + 0.005))
+        guard upper > lower else { return nil }
+        return TimedWord(text: text, start: lower, end: upper)
+    }
 }
 
 struct RecognizedSentence: Identifiable, Sendable {
@@ -42,7 +50,8 @@ struct SentenceAssembler {
 
     mutating func update(words: [TimedWord], silenceDuration: Double, force: Bool = false,
                          audioEnd: Double? = nil) -> [RecognizedSentence] {
-        let remaining = words.filter { $0.start >= consumedThrough - 0.025 && $0.end > consumedThrough + 0.005 }
+        let bounded = audioEnd.map { end in words.compactMap { $0.bounded(from: 0, to: end) } } ?? words
+        let remaining = bounded.filter { $0.start >= consumedThrough - 0.025 && $0.end > consumedThrough + 0.005 }
         var candidates: [Candidate] = []
         var current: [TimedWord] = []
         for word in remaining {
@@ -74,12 +83,18 @@ struct SentenceAssembler {
             let settledBoundary = candidate.hasBoundary && (audioEnd.map { $0 - candidate.end >= 0.35 } ?? false)
             let settledPause = candidate.hasBoundary && silenceDuration >= 0.75
             guard force || settledBoundary || settledPause || (stable && (candidate.hasBoundary || pause)) else { break }
-            guard let language = LanguageDetector.detect(candidate.text), !candidate.text.isEmpty else { break }
+            guard let language = LanguageDetector.detect(candidate.text), !candidate.text.isEmpty else {
+                // Consume rejected completed speech so it cannot block the
+                // next French/Chinese sentence or build a replaying window.
+                consumedThrough = candidate.end
+                continue
+            }
             sentences.append(RecognizedSentence(id: UUID(), original: candidate.text, sourceLanguage: language, start: candidate.start, end: candidate.end))
             consumedThrough = candidate.end
         }
-        liveText = remaining.filter { $0.start >= consumedThrough - 0.025 && $0.end > consumedThrough + 0.005 }
-            .map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        liveText = LanguageDetector.approvedText(remaining.filter {
+            $0.start >= consumedThrough - 0.025 && $0.end > consumedThrough + 0.005
+        }.map(\.text).joined())
         return sentences
     }
 

@@ -71,6 +71,9 @@ struct ContentView: View {
             Text(model.whisper.modelStatus)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Text("识别范围：\(model.settings.recognitionLanguage.title)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             if model.isRunning {
                 VStack(alignment: .leading, spacing: 5) {
@@ -82,10 +85,17 @@ struct ContentView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     ProgressView(value: Double(model.micLevel))
-                    if model.whisper.decodeDuration > 0 {
-                        Text("最近一次识别耗时 \(model.whisper.decodeDuration, specifier: "%.1f") 秒")
+                    if model.whisper.isDecoding {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.mini)
+                            Text("正在识别…").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    } else if model.whisper.decodeDuration >= 0.1 {
+                        Text("上一段识别耗时 \(model.whisper.decodeDuration, specifier: "%.1f") 秒")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                    } else if model.whisper.decodeDuration > 0 {
+                        Text("上一段识别耗时 <0.1 秒").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }

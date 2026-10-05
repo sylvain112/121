@@ -22,7 +22,7 @@ struct SettingsView: View {
                             Text(language.title).tag(language)
                         }
                     }
-                    Text("快速优先响应；均衡、精准适合更复杂的讲话，但等待更长。只听法语时可选择“法语 → 中文”。切换模型后首次使用需要下载。")
+                    Text("只允许中文和法语。仅听法语时选择“法语 → 中文”可省去自动语言检测。快速优先响应；均衡、精准适合更复杂的讲话。切换模型后首次使用需要下载。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .disabled(isRecording)

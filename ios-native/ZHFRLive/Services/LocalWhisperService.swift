@@ -19,6 +19,7 @@ final class LocalWhisperService: ObservableObject {
     @Published private(set) var inputDescription = "优先手机麦克风"
     @Published private(set) var inputGain: Float = 1
     @Published private(set) var decodeDuration: Double = 0
+    @Published private(set) var isDecoding = false
     var onTextChanged: ((String) -> Void)?
     var onAudioChunk: (([Float]) -> Void)?
     var onSentence: ((RecognizedSentence, [Float]) -> Void)?
@@ -71,7 +72,7 @@ final class LocalWhisperService: ObservableObject {
         }
         defer { preparationTask = nil; preparingModel = nil }
         let pipeline = try await task.value
-        guard pipeline.tokenizer != nil else { throw ServiceError.tokenizerUnavailable }
+        try BilingualWhisperConfiguration.restrict(pipeline)
         whisperKit = pipeline
         loadedModel = modelName
         modelReady = true
@@ -90,6 +91,7 @@ final class LocalWhisperService: ObservableObject {
         lastDecodedSample = 0
         lastMeterSample = 0
         decodeDuration = 0
+        isDecoding = false
         inputGain = 1
         liveText = ""
         transcriptGeneration = UUID()
@@ -191,7 +193,11 @@ final class LocalWhisperService: ObservableObject {
         let decodeID = UUID()
         activeDecodeID = decodeID
         lastPreviewAt = .distantPast
-        defer { if activeDecodeID == decodeID { activeDecodeID = nil } }
+        isDecoding = true
+        defer {
+            if activeDecodeID == decodeID { activeDecodeID = nil }
+            isDecoding = false
+        }
         let snapshot = audioBuffer
         let offset = Double(snapshot.baseSample) / 16_000
         let silenceDuration = Double(max(0, snapshot.endSample - lastVoiceSample)) / 16_000
@@ -199,16 +205,10 @@ final class LocalWhisperService: ObservableObject {
         let started = Date()
         let results = try await pipeline.transcribe(
             audioArray: snapshot.samples,
-            decodeOptions: DecodingOptions(
-                task: .transcribe, language: language.code,
-                temperatureFallbackCount: 1, usePrefillPrompt: true, detectLanguage: language == .automatic,
-                skipSpecialTokens: true, withoutTimestamps: false, wordTimestamps: true,
-                clipTimestamps: [Float(max(0, assembler.consumedThrough - offset))],
-                windowClipTime: force ? 0 : 0.15,
-                suppressTokens: [], concurrentWorkerCount: 1
-            ),
+            decodeOptions: BilingualWhisperConfiguration.options(language: language,
+                clipStart: assembler.consumedThrough - offset, final: force),
             callback: { [weak self] progress in
-                let text = SentenceAssembler.clean(progress.text).trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = LanguageDetector.approvedText(progress.text)
                 Task { @MainActor [weak self] in
                     guard let self, self.transcriptGeneration == generation, self.activeDecodeID == decodeID else { return }
                     let now = Date()
@@ -221,17 +221,27 @@ final class LocalWhisperService: ObservableObject {
             }
         )
         guard generation == transcriptGeneration else { return }
-        decodeDuration = Date().timeIntervalSince(started)
-        let words = results.flatMap(\.segments).filter { $0.noSpeechProb < 0.85 }.flatMap { segment -> [TimedWord] in
+        // Do not overwrite the last real recognition time with a skipped,
+        // empty decoder loop (previously displayed as a misleading 0.0 s).
+        if results.contains(where: { $0.timings.totalEncodingRuns > 0 }) {
+            decodeDuration = Date().timeIntervalSince(started)
+        }
+        let words = results.filter { $0.language == "zh" || $0.language == "fr" }
+            .flatMap(\.segments).filter { $0.noSpeechProb < 0.85 }.flatMap { segment -> [TimedWord] in
             if let timings = segment.words, !timings.isEmpty {
                 return timings.map { word in
                     TimedWord(text: SentenceAssembler.clean(word.word), start: offset + Double(word.start), end: offset + Double(word.end))
                 }
             }
             return [TimedWord(text: SentenceAssembler.clean(segment.text), start: offset + Double(segment.start), end: offset + Double(segment.end))]
-        }.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        }.compactMap { $0.bounded(from: offset, to: snapshot.endTime) }
+            .filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         var previousEnd = assembler.consumedThrough
-        let sentences = assembler.update(words: words, silenceDuration: silenceDuration, force: force, audioEnd: snapshot.endTime)
+        // Word timestamps supply a second pause signal when background noise
+        // keeps the microphone energy detector active after speech has ended.
+        let wordSilence = words.last.map { max(0, snapshot.endTime - $0.end) } ?? 0
+        let sentences = assembler.update(words: words, silenceDuration: max(silenceDuration, wordSilence),
+            force: force, audioEnd: snapshot.endTime)
         for (index, sentence) in sentences.enumerated() {
             let nextStart = index + 1 < sentences.count ? sentences[index + 1].start : snapshot.endTime
             let audio = snapshot.audio(from: max(previousEnd, sentence.start - 0.12),

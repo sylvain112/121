@@ -20,7 +20,7 @@ enum RecognitionLanguage: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .automatic: return "中法双向自动"
+        case .automatic: return "仅中法 · 自动"
         case .french: return "法语 → 中文"
         case .chinese: return "中文 → 法语"
         }

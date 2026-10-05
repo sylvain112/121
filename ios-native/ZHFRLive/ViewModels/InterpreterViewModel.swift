@@ -200,6 +200,13 @@ final class InterpreterViewModel: ObservableObject {
     }
 
     private func translate(_ job: TranslationJob, line: TranscriptLine, apiKey: String?, generation: UUID) async {
+        guard !Task.isCancelled, generation == recordGeneration else { return }
+        if let text = PhraseTranslator.translate(line.original, from: line.sourceLanguage) {
+            let ticket = bindings.begin(lineID: job.lineID)
+            updateTranslation(text, ticket: ticket, final: true)
+            retryAudio.removeValue(forKey: job.lineID)
+            return
+        }
         for attempt in 0..<2 {
             guard !Task.isCancelled, generation == recordGeneration else { return }
             let ticket = bindings.begin(lineID: job.lineID)
