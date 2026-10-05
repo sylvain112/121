@@ -1,4 +1,5 @@
 import Foundation
+import CoreML
 import WhisperKit
 
 func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
@@ -13,7 +14,7 @@ func processedAudio(path: String) throws -> [Float] {
         output += processor.process(Array(input[start..<min(start + 1_600, input.count)]), boost: true).samples
     }
     output += [Float](repeating: 0, count: 12_800)
-    print("AUDIO: \(String(format: "%.2f", Double(input.count) / 16_000)) s, peak \(String(format: "%.3f", input.map { abs($0) }.max() ?? 0))")
+    print("AUDIO: \(String(format: "%.2f", Double(input.count) / 16_000)) s, peak \(String(format: "%.3f", input.map { abs($0) }.max() ?? 0)), rms \(sqrt(output.reduce(Float(0)) { $0 + $1 * $1 } / Float(output.count)))")
     return output
 }
 
@@ -39,10 +40,14 @@ func checkTranslation(audio: [Float], source: TranscriptLine.SourceLanguage) asy
 
 do {
     let directory = CommandLine.arguments[1]
-    let pipeline = try await WhisperKit(WhisperKitConfig(model: "openai_whisper-base", verbose: false,
+    let pipeline = try await WhisperKit(WhisperKitConfig(model: "openai_whisper-base",
+        computeOptions: ModelComputeOptions(melCompute: .cpuOnly, audioEncoderCompute: .cpuOnly, textDecoderCompute: .cpuOnly), verbose: false,
         prewarm: true, load: true, download: true))
-    print("MODEL: multilingual=\(pipeline.textDecoder.isModelMultilingual), logits=\(pipeline.textDecoder.logitsSize ?? 0)")
+    print("MODEL: CPU-only runner check; multilingual=\(pipeline.textDecoder.isModelMultilingual), logits=\(pipeline.textDecoder.logitsSize ?? 0)")
     let diagnosticAudio = try processedAudio(path: "\(directory)/fr.wav")
+    if ProcessInfo.processInfo.environment["ZHFR_CHECK_LIVE_TRANSLATION"] == "1" {
+        try await checkTranslation(audio: diagnosticAudio, source: .fr)
+    }
     let baseline = try await pipeline.transcribe(audioArray: diagnosticAudio,
         decodeOptions: BilingualWhisperConfiguration.options(language: .french, final: true))
     print("BASELINE fixed fr: \(baseline.map(\.text).joined()) language=\(baseline.map(\.language)), segments=\(baseline.flatMap(\.segments).count)")
@@ -78,7 +83,7 @@ do {
         try require(assembler.consumedThrough <= duration, "Actual ASR timestamps skipped beyond the recording")
         try require(sentences.allSatisfy { $0.sourceLanguage == source }, "Actual ASR sentence language differs from the source")
 
-        if ProcessInfo.processInfo.environment["ZHFR_CHECK_LIVE_TRANSLATION"] == "1" {
+        if source == .zh, ProcessInfo.processInfo.environment["ZHFR_CHECK_LIVE_TRANSLATION"] == "1" {
             try await checkTranslation(audio: audio, source: source)
         }
     }
