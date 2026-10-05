@@ -21,6 +21,7 @@ actor RealtimeTranslationSocket {
     private struct SessionResponse: Decodable { let client_secret: String?; let error: String? }
     private let target: Target
     private let backendBaseURL: URL
+    private let noiseReduction: String?
     private var webSocket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var deltaHandler: (@Sendable (String) -> Void)?
@@ -28,11 +29,11 @@ actor RealtimeTranslationSocket {
     private var ready = false
     private var closed = false
     private var failure: String?
-    private var usingDirectAPIKey = false
 
-    init(target: Target, backendBaseURL: URL) {
+    init(target: Target, backendBaseURL: URL, noiseReduction: String? = "far_field") {
         self.target = target
         self.backendBaseURL = backendBaseURL
+        self.noiseReduction = noiseReduction
     }
 
     func translate(
@@ -42,12 +43,14 @@ actor RealtimeTranslationSocket {
         deltaHandler = onDelta
         do {
             try await connect(personalAPIKey: personalAPIKey)
+            // Context silence protects short utterances at both clip edges.
+            try await sendAudio16k([Float](repeating: 0, count: 1_600))
             // Bounded WebSocket messages; preserve the sample order.
             for start in stride(from: 0, to: audio16k.count, by: 3_200) {
                 try Task.checkCancellation()
                 try await sendAudio16k(Array(audio16k[start..<min(start + 3_200, audio16k.count)]))
             }
-            try await sendAudio16k([Float](repeating: 0, count: 9_600))
+            for _ in 0..<6 { try await sendAudio16k([Float](repeating: 0, count: 3_200)) }
             try await send(["type": "session.close"])
             // session.close flushes pending translation. Closing the transport
             // immediately would lose the final words of the sentence.
@@ -71,9 +74,8 @@ actor RealtimeTranslationSocket {
 
     private func connect(personalAPIKey: String?) async throws {
         let key = personalAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        usingDirectAPIKey = !key.isEmpty
         let credential: String
-        if usingDirectAPIKey { credential = key }
+        if !key.isEmpty { credential = key }
         else { credential = try await createEphemeralSecret() }
         let url = URL(string: "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate")!
         var request = URLRequest(url: url)
@@ -137,9 +139,10 @@ actor RealtimeTranslationSocket {
                 }
                 switch events.ingest(json) {
                 case .created:
-                    if usingDirectAPIKey {
-                        try await send(["type": "session.update", "session": ["audio": ["input": ["noise_reduction": ["type": "near_field"]], "output": ["language": target.rawValue]]]])
-                    } else { ready = true }
+                    var input: [String: Any] = [:]
+                    if let noiseReduction { input["noise_reduction"] = ["type": noiseReduction] }
+                    else { input["noise_reduction"] = NSNull() }
+                    try await send(["type": "session.update", "session": ["audio": ["input": input, "output": ["language": target.rawValue]]]])
                 case .updated: ready = true
                 case .transcript(let text): deltaHandler?(text)
                 case .closed: closed = true; return

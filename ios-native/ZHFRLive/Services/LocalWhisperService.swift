@@ -4,12 +4,11 @@ import WhisperKit
 @MainActor
 final class LocalWhisperService: ObservableObject {
     enum ServiceError: LocalizedError {
-        case tokenizerUnavailable, microphoneDenied, audioProcessorUnavailable
+        case tokenizerUnavailable, microphoneDenied
         var errorDescription: String? {
             switch self {
             case .tokenizerUnavailable: return "WhisperKit tokenizer 加载失败。"
             case .microphoneDenied: return "没有麦克风权限。"
-            case .audioProcessorUnavailable: return "无法取得 WhisperKit 实时麦克风音频。"
             }
         }
     }
@@ -17,52 +16,81 @@ final class LocalWhisperService: ObservableObject {
     @Published private(set) var modelReady = false
     @Published private(set) var modelStatus = "尚未加载本地模型"
     @Published private(set) var liveText = ""
-    let modelName = "large-v3-v20240930_626MB"
+    @Published private(set) var inputDescription = "优先手机麦克风"
+    @Published private(set) var inputGain: Float = 1
+    @Published private(set) var decodeDuration: Double = 0
     var onTextChanged: ((String) -> Void)?
     var onAudioChunk: (([Float]) -> Void)?
     var onSentence: ((RecognizedSentence, [Float]) -> Void)?
     var onError: ((String) -> Void)?
 
+    private let microphone = MicrophoneCapture()
     private var whisperKit: WhisperKit?
+    private var loadedModel: String?
     private var preparationTask: Task<WhisperKit, Error>?
+    private var preparingModel: String?
     private var transcriptionTask: Task<Void, Never>?
     private var audioTask: Task<Void, Never>?
     private var audioContinuation: AsyncStream<[Float]>.Continuation?
     private var audioBuffer = SentenceAudioBuffer()
     private var assembler = SentenceAssembler()
+    private var signalProcessor = MicrophoneSignalProcessor()
+    private var language = RecognitionLanguage.automatic
+    private var boost = true
     private var isRecording = false
     private var transcriptGeneration = UUID()
     private var recordingGeneration = UUID()
+    private var activeDecodeID: UUID?
     private var lastVoiceSample = 0
     private var lastDecodedSample = 0
+    private var lastMeterSample = 0
+    private var lastPreviewAt = Date.distantPast
 
-    func prepare() async throws {
-        guard !modelReady else { return }
-        modelStatus = "正在下载 / 加载本地 Whisper 模型…"
+    func prepare(profile: RecognitionProfile) async throws {
+        let modelName = profile.modelName
+        guard !modelReady || loadedModel != modelName else { return }
+        if let existing = preparationTask, preparingModel != modelName {
+            _ = try? await existing.value
+            // The owner of the shared task publishes/clears it on the main actor.
+            await Task.yield()
+            try await prepare(profile: profile)
+            return
+        }
+        modelReady = false
+        modelStatus = "正在下载 / 加载\(profile.title)本地模型…"
         let task: Task<WhisperKit, Error>
         if let existing = preparationTask { task = existing }
         else {
+            whisperKit = nil
+            loadedModel = nil
             let config = WhisperKitConfig(model: modelName, verbose: false, prewarm: true, load: true,
                 download: true, useBackgroundDownloadSession: true)
             task = Task { try await WhisperKit(config) }
             preparationTask = task
+            preparingModel = modelName
         }
-        defer { preparationTask = nil }
+        defer { preparationTask = nil; preparingModel = nil }
         let pipeline = try await task.value
         guard pipeline.tokenizer != nil else { throw ServiceError.tokenizerUnavailable }
         whisperKit = pipeline
+        loadedModel = modelName
         modelReady = true
-        modelStatus = "本地模型已就绪 · \(modelName)"
+        modelStatus = "\(profile.title)本地模型已就绪 · \(modelName)"
     }
 
-    func start() async throws {
+    func start(language: RecognitionLanguage, microphonePreference: MicrophonePreference, boost: Bool) async throws {
         guard !isRecording else { return }
         guard await AudioProcessor.requestRecordPermission() else { throw ServiceError.microphoneDenied }
-        guard let processor = whisperKit?.audioProcessor as? AudioProcessor else { throw ServiceError.audioProcessorUnavailable }
+        self.language = language
+        self.boost = boost
         audioBuffer = SentenceAudioBuffer()
         assembler.reset()
+        signalProcessor = MicrophoneSignalProcessor()
         lastVoiceSample = 0
         lastDecodedSample = 0
+        lastMeterSample = 0
+        decodeDuration = 0
+        inputGain = 1
         liveText = ""
         transcriptGeneration = UUID()
         recordingGeneration = UUID()
@@ -77,15 +105,18 @@ final class LocalWhisperService: ObservableObject {
         }
         isRecording = true
         do {
-            // Keep the callback installed from the first microphone frame.
-            try processor.startRecordingLive { [weak processor] chunk in
-                // Purge on the capture callback's own thread, not concurrently
-                // with AudioProcessor appending to its buffer.
-                processor?.purgeAudioSamples(keepingLast: SentenceAudioBuffer.sampleRate * 2)
-                stream.continuation.yield(chunk)
-            }
+            try microphone.start(preference: microphonePreference,
+                onChunk: { stream.continuation.yield($0) },
+                onError: { [weak self] message in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.recordingGeneration == generation, self.isRecording else { return }
+                        self.onError?(message)
+                    }
+                })
+            inputDescription = microphone.inputDescription
         } catch {
             isRecording = false
+            microphone.stop()
             stream.continuation.finish()
             await audioTask?.value
             audioTask = nil
@@ -96,14 +127,18 @@ final class LocalWhisperService: ObservableObject {
             guard let self else { return }
             while self.isRecording && !Task.isCancelled {
                 do {
-                    if self.audioBuffer.endSample - self.lastDecodedSample >= SentenceAudioBuffer.sampleRate {
+                    let pendingVoice = self.lastVoiceSample > self.lastDecodedSample || !self.assembler.liveText.isEmpty
+                    if pendingVoice && self.audioBuffer.endSample - self.lastDecodedSample >= 8_800 {
                         try await self.decode(force: false)
+                    } else if self.audioBuffer.endSample - self.lastVoiceSample > 48_000 && self.assembler.liveText.isEmpty {
+                        // Idle capture must not build an unbounded decoding window.
+                        self.audioBuffer.discard(before: self.audioBuffer.endTime - 0.3)
+                        self.assembler.reset(at: Double(self.audioBuffer.baseSample) / 16_000)
                     }
-                    try await Task.sleep(nanoseconds: 100_000_000)
+                    try await Task.sleep(nanoseconds: 80_000_000)
                 } catch {
                     if !Task.isCancelled {
-                        self.modelStatus = "本地转写错误：\(error.localizedDescription)"
-                        self.onError?(self.modelStatus)
+                        self.onError?("本地转写错误：\(error.localizedDescription)")
                     }
                     break
                 }
@@ -113,12 +148,11 @@ final class LocalWhisperService: ObservableObject {
 
     func stop() async {
         isRecording = false
-        whisperKit?.audioProcessor.stopRecording()
+        microphone.stop()
         audioContinuation?.finish()
         await audioTask?.value
         audioTask = nil
         audioContinuation = nil
-        // Model state is shared, so wait before doing the final local decode.
         await transcriptionTask?.value
         transcriptionTask = nil
         do { try await decode(force: true) }
@@ -126,8 +160,8 @@ final class LocalWhisperService: ObservableObject {
     }
 
     func clearTranscript() {
-        // Invalidate an in-flight result without invalidating microphone input.
         transcriptGeneration = UUID()
+        activeDecodeID = nil
         assembler.reset(at: audioBuffer.endTime)
         audioBuffer.clearKeepingClock()
         lastVoiceSample = audioBuffer.endSample
@@ -138,28 +172,56 @@ final class LocalWhisperService: ObservableObject {
 
     private func receiveAudio(_ chunk: [Float]) {
         guard !chunk.isEmpty else { return }
-        audioBuffer.append(chunk)
-        let rms = sqrt(chunk.reduce(Float(0)) { $0 + $1 * $1 } / Float(chunk.count))
-        if rms >= 0.008 { lastVoiceSample = audioBuffer.endSample }
-        onAudioChunk?(chunk)
+        let frame = signalProcessor.process(chunk, boost: boost)
+        audioBuffer.append(frame.samples)
+        if frame.hasVoice { lastVoiceSample = audioBuffer.endSample }
+        if audioBuffer.endSample - lastMeterSample >= 1_600 {
+            lastMeterSample = audioBuffer.endSample
+            inputGain = frame.gain
+            let description = microphone.inputDescription
+            if inputDescription != description { inputDescription = description }
+            onAudioChunk?(chunk)
+        }
     }
 
     private func decode(force: Bool) async throws {
         guard let pipeline = whisperKit, !audioBuffer.samples.isEmpty else { return }
+        if force && assembler.liveText.isEmpty && lastVoiceSample <= Int(assembler.consumedThrough * 16_000) { return }
         let generation = transcriptGeneration
+        let decodeID = UUID()
+        activeDecodeID = decodeID
+        lastPreviewAt = .distantPast
+        defer { if activeDecodeID == decodeID { activeDecodeID = nil } }
         let snapshot = audioBuffer
-        let sampleEnd = snapshot.endSample
-        let offset = Double(snapshot.baseSample) / Double(SentenceAudioBuffer.sampleRate)
-        let silenceDuration = Double(max(0, sampleEnd - lastVoiceSample)) / Double(SentenceAudioBuffer.sampleRate)
-        lastDecodedSample = sampleEnd
+        let offset = Double(snapshot.baseSample) / 16_000
+        let silenceDuration = Double(max(0, snapshot.endSample - lastVoiceSample)) / 16_000
+        lastDecodedSample = snapshot.endSample
+        let started = Date()
         let results = try await pipeline.transcribe(
             audioArray: snapshot.samples,
             decodeOptions: DecodingOptions(
-                task: .transcribe, language: nil, detectLanguage: true,
-                withoutTimestamps: false, wordTimestamps: true, suppressTokens: []
-            )
+                task: .transcribe, language: language.code,
+                temperatureFallbackCount: 1, usePrefillPrompt: true, detectLanguage: language == .automatic,
+                skipSpecialTokens: true, withoutTimestamps: false, wordTimestamps: true,
+                clipTimestamps: [Float(max(0, assembler.consumedThrough - offset))],
+                windowClipTime: force ? 0 : 0.15,
+                suppressTokens: [], concurrentWorkerCount: 1
+            ),
+            callback: { [weak self] progress in
+                let text = SentenceAssembler.clean(progress.text).trimmingCharacters(in: .whitespacesAndNewlines)
+                Task { @MainActor [weak self] in
+                    guard let self, self.transcriptGeneration == generation, self.activeDecodeID == decodeID else { return }
+                    let now = Date()
+                    guard self.liveText != text, now.timeIntervalSince(self.lastPreviewAt) >= 0.12 else { return }
+                    self.lastPreviewAt = now
+                    self.liveText = text
+                    self.onTextChanged?(text)
+                }
+                return nil
+            }
         )
         guard generation == transcriptGeneration else { return }
+        decodeDuration = Date().timeIntervalSince(started)
         let words = results.flatMap(\.segments).filter { $0.noSpeechProb < 0.85 }.flatMap { segment -> [TimedWord] in
             if let timings = segment.words, !timings.isEmpty {
                 return timings.map { word in
@@ -168,18 +230,24 @@ final class LocalWhisperService: ObservableObject {
             }
             return [TimedWord(text: SentenceAssembler.clean(segment.text), start: offset + Double(segment.start), end: offset + Double(segment.end))]
         }.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        let sentences = assembler.update(words: words, silenceDuration: silenceDuration, force: force)
-        for sentence in sentences {
-            let audio = snapshot.audio(from: sentence.start, to: sentence.end)
+        var previousEnd = assembler.consumedThrough
+        let sentences = assembler.update(words: words, silenceDuration: silenceDuration, force: force, audioEnd: snapshot.endTime)
+        for (index, sentence) in sentences.enumerated() {
+            let nextStart = index + 1 < sentences.count ? sentences[index + 1].start : snapshot.endTime
+            let audio = snapshot.audio(from: max(previousEnd, sentence.start - 0.12),
+                                       to: min(nextStart, sentence.end + 0.18))
+            previousEnd = sentence.end
             guard !audio.isEmpty else { continue }
             onSentence?(sentence, audio)
         }
+        // Invalidate delayed progress callbacks before publishing the final tail.
+        activeDecodeID = nil
         liveText = assembler.liveText
         onTextChanged?(liveText)
-        audioBuffer.discard(before: assembler.consumedThrough)
+        audioBuffer.discard(before: assembler.consumedThrough - 0.18)
         if words.isEmpty && silenceDuration >= 3 {
             audioBuffer.discard(before: snapshot.endTime - 0.3)
-            assembler.reset(at: Double(audioBuffer.baseSample) / Double(SentenceAudioBuffer.sampleRate))
+            assembler.reset(at: Double(audioBuffer.baseSample) / 16_000)
         }
     }
 }

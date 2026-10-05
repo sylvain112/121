@@ -96,4 +96,40 @@ expect(!bindings.accepts(retryA), "clear rejects in-flight translation callbacks
 let newTicket = bindings.begin(lineID: UUID())
 bindings.finish(newTicket)
 expect(!bindings.accepts(newTicket), "late partial text cannot overwrite a final translation")
-print("\(passed) sentence and translation regression checks passed.")
+assembler.reset()
+expect(assembler.update(words: first, silenceDuration: 0, audioEnd: 2.4).map(\.original) == ["Le semestre a été difficile."], "completed sentence with following audio avoids a second full decode")
+expect(assembler.update(words: first, silenceDuration: 0, audioEnd: 3).isEmpty, "fast confirmation still rejects replayed audio")
+assembler.reset()
+expect(assembler.update(words: first, silenceDuration: 0, audioEnd: 2.1).isEmpty, "a sentence on the live edge stays revisable")
+expect(assembler.update(words: first, silenceDuration: 0.8, audioEnd: 2.1).count == 1, "punctuation plus short silence completes the sentence")
+assembler.reset()
+expect(assembler.update(words: fragment, silenceDuration: 0.8, audioEnd: 1.4).isEmpty, "fast mode does not split an unpunctuated two-character fragment")
+
+let history = (0..<7).map { index in
+    TranscriptLine(sourceLanguage: .fr, original: "Phrase \(index).", translation: "译文 \(index)。")
+}
+expect(TranscriptWindow.recent(history, hasDraft: false).map(\.id) == Array(history.suffix(4)).map(\.id), "default screen keeps the newest four original-translation pairs in speaking order")
+expect(TranscriptWindow.recent(history, hasDraft: true).map(\.id) == Array(history.suffix(3)).map(\.id), "a live original occupies the fourth slot instead of hiding the newest sentences")
+expect(history.count == 7 && history.first?.original == "Phrase 0.", "visible window does not discard historical originals")
+expect(TranscriptWindow.recent([], hasDraft: true).isEmpty, "first draft does not require existing records")
+
+func tone(amplitude: Float) -> [Float] {
+    (0..<1_600).map { amplitude * Float(sin(2 * Double.pi * 160 * Double($0) / 16_000)) }
+}
+var signal = MicrophoneSignalProcessor()
+let quiet = signal.process(tone(amplitude: 0.0001), boost: true)
+expect(!quiet.hasVoice && quiet.gain <= 1.01, "quiet background is not promoted to speech by pickup boost")
+let weak = signal.process(tone(amplitude: 0.006), boost: true)
+expect(weak.hasVoice && weak.gain > 1, "weak real speech is detected before amplification and receives bounded gain")
+var sustained = weak
+for _ in 0..<80 { sustained = signal.process(tone(amplitude: 0.006), boost: true) }
+expect(sustained.hasVoice && sustained.gain <= 4, "sustained quiet speech is not learned as noise and gain remains bounded")
+let loud = signal.process(tone(amplitude: 0.9), boost: true)
+expect(loud.samples.allSatisfy { abs($0) <= 0.98 }, "a sudden loud speaker after weak speech does not clip")
+var unboosted = MicrophoneSignalProcessor()
+expect(unboosted.process(tone(amplitude: 0.006), boost: false).gain == 1, "pickup boost can be disabled without changing speech detection")
+var dc = MicrophoneSignalProcessor()
+var dcFrame = dc.process([Float](repeating: 0.2, count: 1_600), boost: false)
+for _ in 0..<5 { dcFrame = dc.process([Float](repeating: 0.2, count: 1_600), boost: false) }
+expect(dcFrame.rms < 0.00001 && !dcFrame.hasVoice, "microphone DC offset settles instead of keeping speech active")
+print("\(passed) sentence, translation, display and audio regression checks passed.")

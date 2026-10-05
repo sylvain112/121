@@ -4,6 +4,7 @@ struct ContentView: View {
     @EnvironmentObject private var model: InterpreterViewModel
     @State private var showSettings = false
     @State private var summaryExpanded = true
+    @State private var showHistory = false
 
     var body: some View {
         NavigationStack {
@@ -35,8 +36,14 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $showSettings) {
-                SettingsView(settings: model.settings)
+                SettingsView(settings: model.settings, isRecording: model.isRunning || model.isChangingState)
             }
+            .onChange(of: showSettings) { _, visible in
+                if !visible && !model.isRunning && !model.isChangingState {
+                    Task { await model.prepareModel() }
+                }
+            }
+            .sheet(isPresented: $showHistory) { TranscriptHistoryView() }
             .sheet(item: $model.exportItem) { item in
                 ShareSheet(items: [item.url])
             }
@@ -68,13 +75,18 @@ struct ContentView: View {
             if model.isRunning {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Text("麦克风输入")
+                        Text(model.whisper.inputDescription)
                         Spacer()
-                        Text("\(Int(model.micLevel * 100))% · \(model.audioChunkCount) chunks")
+                        Text("\(Int(model.micLevel * 100))%")
                     }
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     ProgressView(value: Double(model.micLevel))
+                    if model.whisper.decodeDuration > 0 {
+                        Text("最近一次识别耗时 \(model.whisper.decodeDuration, specifier: "%.1f") 秒")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -107,58 +119,40 @@ struct ContentView: View {
     private var conversationCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("同传记录")
+                Text("同传记录 · 最近 4 句")
                     .font(.headline)
                 Spacer()
-                if let language = model.detectedLanguage {
-                    Text(language == .zh ? "中文 → Français" : "Français → 中文")
-                        .font(.caption.bold())
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(.thinMaterial, in: Capsule())
+                if !model.lines.isEmpty {
+                    Button("全部 \(model.lines.count) 句") { showHistory = true }
+                        .font(.caption.weight(.semibold))
                 }
             }
-            ScrollView(.vertical, showsIndicators: true) {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    if model.lines.isEmpty {
-                        Text(model.isRunning ? "正在听取讲话，完整译句会显示在这里…" : "开始同传后，译文会按顺序显示在这里。")
+            let hasDraft = !model.liveSource.isEmpty
+            let visible = TranscriptWindow.recent(model.lines, hasDraft: hasDraft)
+            VStack(alignment: .leading, spacing: 12) {
+                if visible.isEmpty && !hasDraft {
+                    Text(model.isRunning ? "正在听取讲话，原句和译文会显示在这里…" : "开始同传后，每句原文和译文会成对显示。")
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                }
+                ForEach(visible) { line in
+                    TranscriptSentenceView(line: line, isRetrying: model.retryingIDs.contains(line.id)) {
+                        model.retryTranslation(line.id)
+                    }
+                    if line.id != visible.last?.id || hasDraft { Divider() }
+                }
+                if hasDraft {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(model.detectedLanguage == .zh ? "中文原文 · 识别中" : "法语原文 · 识别中")
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
+                        Text(model.liveSource)
                             .font(.subheadline)
-                    }
-                    ForEach(model.lines) { line in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(line.sourceLanguage == .zh ? "中文 → Français" : "Français → 中文")
-                                .font(.caption.bold())
-                                .foregroundStyle(.secondary)
-                            if !line.translation.isEmpty {
-                                Text(line.translation)
-                                    .font(.body.weight(.medium))
-                                    .textSelection(.enabled)
-                            } else if line.translationError == nil {
-                                HStack(spacing: 8) {
-                                    ProgressView().controlSize(.small)
-                                    Text("正在生成译文…").foregroundStyle(.secondary)
-                                }
-                            }
-                            if let message = line.translationError {
-                                Text(message).font(.caption).foregroundStyle(.red)
-                                Button("重试这句翻译") { model.retryTranslation(line.id) }
-                                    .font(.caption.bold())
-                            }
-                        }
-                        .padding(.vertical, 3)
-                        if line.id != model.lines.last?.id { Divider() }
-                    }
-                    if model.isRunning && !model.liveSource.isEmpty {
-                        Text("正在识别下一句…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, 4)
             }
-            .frame(height: 480)
+            .frame(maxWidth: .infinity, minHeight: 160, alignment: .topLeading)
         }
         .padding(16)
         .background(.background, in: RoundedRectangle(cornerRadius: 18))

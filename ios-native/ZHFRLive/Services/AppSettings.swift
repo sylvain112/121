@@ -6,6 +6,10 @@ final class AppSettings: ObservableObject {
         static let apiKey = "openai-api-key"
         static let summaryModel = "zhfr.summary-model"
         static let usePersonalAPI = "zhfr.use-personal-api"
+        static let recognitionProfile = "zhfr.recognition-profile"
+        static let recognitionLanguage = "zhfr.recognition-language"
+        static let microphone = "zhfr.microphone"
+        static let pickupBoost = "zhfr.pickup-boost"
     }
 
     @Published private(set) var hasPersonalAPIKey = false
@@ -15,8 +19,24 @@ final class AppSettings: ObservableObject {
     @Published var usePersonalAPI: Bool {
         didSet { UserDefaults.standard.set(usePersonalAPI, forKey: Keys.usePersonalAPI) }
     }
+    @Published var recognitionProfile: RecognitionProfile {
+        didSet { UserDefaults.standard.set(recognitionProfile.rawValue, forKey: Keys.recognitionProfile) }
+    }
+    @Published var recognitionLanguage: RecognitionLanguage {
+        didSet { UserDefaults.standard.set(recognitionLanguage.rawValue, forKey: Keys.recognitionLanguage) }
+    }
+    @Published var microphone: MicrophonePreference {
+        didSet { UserDefaults.standard.set(microphone.rawValue, forKey: Keys.microphone) }
+    }
+    @Published var pickupBoost: Bool {
+        didSet { UserDefaults.standard.set(pickupBoost, forKey: Keys.pickupBoost) }
+    }
 
     init() {
+        recognitionProfile = RecognitionProfile(rawValue: UserDefaults.standard.string(forKey: Keys.recognitionProfile) ?? "") ?? .fast
+        recognitionLanguage = RecognitionLanguage(rawValue: UserDefaults.standard.string(forKey: Keys.recognitionLanguage) ?? "") ?? .automatic
+        microphone = MicrophonePreference(rawValue: UserDefaults.standard.string(forKey: Keys.microphone) ?? "") ?? .phone
+        pickupBoost = UserDefaults.standard.object(forKey: Keys.pickupBoost) == nil ? true : UserDefaults.standard.bool(forKey: Keys.pickupBoost)
         summaryModel = UserDefaults.standard.string(forKey: Keys.summaryModel) ?? "gpt-6-astra"
         if UserDefaults.standard.object(forKey: Keys.usePersonalAPI) == nil {
             usePersonalAPI = true

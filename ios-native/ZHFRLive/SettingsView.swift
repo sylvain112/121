@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
+    var isRecording = false
     @Environment(\.dismiss) private var dismiss
     @State private var apiKey = ""
     @State private var saveMessage = ""
@@ -9,6 +10,36 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("识别速度") {
+                    Picker("本地模型", selection: $settings.recognitionProfile) {
+                        ForEach(RecognitionProfile.allCases) { profile in
+                            Text(profile.title).tag(profile)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Picker("讲话语言", selection: $settings.recognitionLanguage) {
+                        ForEach(RecognitionLanguage.allCases) { language in
+                            Text(language.title).tag(language)
+                        }
+                    }
+                    Text("快速优先响应；均衡、精准适合更复杂的讲话，但等待更长。只听法语时可选择“法语 → 中文”。切换模型后首次使用需要下载。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .disabled(isRecording)
+
+                Section("收音") {
+                    Picker("输入设备", selection: $settings.microphone) {
+                        ForEach(MicrophonePreference.allCases) { microphone in
+                            Text(microphone.title).tag(microphone)
+                        }
+                    }
+                    Toggle("增强较弱人声", isOn: $settings.pickupBoost)
+                    Text("默认优先手机麦克风。使用耳机或外接麦克风时选择跟随系统；主页会显示当前输入设备。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if isRecording { Text("结束同传后可调整识别和收音设置。").font(.caption) }
+                }
+                .disabled(isRecording)
+
                 Section("OpenAI API") {
                     SecureField("sk-…", text: $apiKey)
                         .textInputAutocapitalization(.never)

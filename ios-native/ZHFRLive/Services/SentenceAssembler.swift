@@ -40,7 +40,8 @@ struct SentenceAssembler {
         observations.removeAll()
     }
 
-    mutating func update(words: [TimedWord], silenceDuration: Double, force: Bool = false) -> [RecognizedSentence] {
+    mutating func update(words: [TimedWord], silenceDuration: Double, force: Bool = false,
+                         audioEnd: Double? = nil) -> [RecognizedSentence] {
         let remaining = words.filter { $0.start >= consumedThrough - 0.025 && $0.end > consumedThrough + 0.005 }
         var candidates: [Candidate] = []
         var current: [TimedWord] = []
@@ -53,7 +54,7 @@ struct SentenceAssembler {
             }
             current.append(word)
             let text = current.map(\.text).joined()
-            if Self.endsSentence(text) || (word.end - (current.first?.start ?? word.start) >= 20 && text.count >= 60) {
+            if Self.endsSentence(text) || (word.end - (current.first?.start ?? word.start) >= 15 && text.count >= 60) {
                 candidates.append(Candidate(words: current, hasBoundary: true))
                 current = []
             }
@@ -67,8 +68,12 @@ struct SentenceAssembler {
         var sentences: [RecognizedSentence] = []
         for (index, candidate) in candidates.enumerated() {
             let stable = nextObservations[index].count >= 2
-            let pause = silenceDuration >= 1.1 && Self.canEndAtPause(candidate.text, silenceDuration: silenceDuration)
-            guard force || (stable && (candidate.hasBoundary || pause)) else { break }
+            let pause = silenceDuration >= 0.75 && Self.canEndAtPause(candidate.text, silenceDuration: silenceDuration)
+            // A punctuated sentence away from the live edge can be emitted on
+            // its first complete decode. Keep edge drafts revisable as before.
+            let settledBoundary = candidate.hasBoundary && (audioEnd.map { $0 - candidate.end >= 0.35 } ?? false)
+            let settledPause = candidate.hasBoundary && silenceDuration >= 0.75
+            guard force || settledBoundary || settledPause || (stable && (candidate.hasBoundary || pause)) else { break }
             guard let language = LanguageDetector.detect(candidate.text), !candidate.text.isEmpty else { break }
             sentences.append(RecognizedSentence(id: UUID(), original: candidate.text, sourceLanguage: language, start: candidate.start, end: candidate.end))
             consumedThrough = candidate.end

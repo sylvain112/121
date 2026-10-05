@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 import SwiftUI
 
@@ -17,6 +18,7 @@ final class InterpreterViewModel: ObservableObject {
     @Published var summaryText = ""
     @Published var isSummarizing = false
     @Published var exportItem: ExportItem?
+    @Published private(set) var retryingIDs: Set<UUID> = []
     let whisper = LocalWhisperService()
     let settings = AppSettings()
 
@@ -27,10 +29,13 @@ final class InterpreterViewModel: ObservableObject {
     private var retryAudio: [UUID: [Float]] = [:]
     private var queuedIDs: Set<UUID> = []
     private var bindings = TranslationBindings()
-    private var translationTask: Task<Void, Never>?
+    private var translationTasks: [UUID: Task<Void, Never>] = [:]
+    private var observations: Set<AnyCancellable> = []
     private var recordGeneration = UUID()
 
     init() {
+        whisper.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
+        settings.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
         whisper.onTextChanged = { [weak self] text in
             guard let self else { return }
             self.liveSource = text
@@ -47,8 +52,9 @@ final class InterpreterViewModel: ObservableObject {
     }
 
     func prepareModel() async {
+        guard !isRunning, !isChangingState else { return }
         do {
-            try await whisper.prepare()
+            try await whisper.prepare(profile: settings.recognitionProfile)
             if !isRunning && !isChangingState { status = whisper.modelStatus }
         } catch { handleError(error.localizedDescription) }
     }
@@ -68,9 +74,10 @@ final class InterpreterViewModel: ObservableObject {
         micLevel = 0
         status = "正在准备本地 Whisper…"
         do {
-            try await whisper.prepare()
+            try await whisper.prepare(profile: settings.recognitionProfile)
             status = "正在启动麦克风…"
-            try await whisper.start()
+            try await whisper.start(language: settings.recognitionLanguage,
+                microphonePreference: settings.microphone, boost: settings.pickupBoost)
             isRunning = true
             refreshStatus()
         } catch {
@@ -94,11 +101,12 @@ final class InterpreterViewModel: ObservableObject {
 
     func clear() {
         recordGeneration = UUID()
-        translationTask?.cancel()
-        translationTask = nil
+        for task in translationTasks.values { task.cancel() }
+        translationTasks.removeAll()
         jobs.removeAll()
         retryAudio.removeAll()
         queuedIDs.removeAll()
+        retryingIDs.removeAll()
         bindings.clear()
         lines.removeAll()
         liveSource = ""
@@ -168,41 +176,59 @@ final class InterpreterViewModel: ObservableObject {
     }
 
     private func startTranslationWorker() {
-        guard translationTask == nil else { return }
-        let generation = recordGeneration
-        translationTask = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if generation == self.recordGeneration {
-                    self.translationTask = nil
-                    self.refreshStatus()
-                }
+        // Two independent sentences can finish out of order; their IDs keep
+        // displayed originals and translations in the original speaking order.
+        while translationTasks.count < 2 && !jobs.isEmpty {
+            let job = jobs.removeFirst()
+            guard let line = lines.first(where: { $0.id == job.lineID }) else {
+                queuedIDs.remove(job.lineID)
+                continue
             }
-            while !self.jobs.isEmpty && !Task.isCancelled && generation == self.recordGeneration {
-                let job = self.jobs.removeFirst()
-                guard let line = self.lines.first(where: { $0.id == job.lineID }) else { continue }
-                self.refreshStatus()
-                let target: RealtimeTranslationSocket.Target = line.sourceLanguage == .zh ? .fr : .zh
-                let socket = RealtimeTranslationSocket(target: target, backendBaseURL: self.backendURL)
-                let ticket = self.bindings.begin(lineID: job.lineID)
-                do {
-                    let text = try await socket.translate(audio16k: job.audio, personalAPIKey: self.settings.currentAPIKey()) { [weak self] text in
-                        Task { @MainActor [weak self] in self?.updateTranslation(text, ticket: ticket, final: false) }
-                    }
-                    guard !Task.isCancelled, generation == self.recordGeneration else { return }
-                    self.updateTranslation(text, ticket: ticket, final: true)
-                    self.retryAudio.removeValue(forKey: job.lineID)
-                } catch {
-                    guard !Task.isCancelled, generation == self.recordGeneration else { return }
-                    if let index = self.lines.firstIndex(where: { $0.id == job.lineID }) {
-                        self.lines[index].translationError = error.localizedDescription
-                    }
-                    self.bindings.finish(ticket)
-                }
+            let generation = recordGeneration
+            let key = settings.currentAPIKey()
+            translationTasks[job.lineID] = Task { [weak self] in
+                guard let self else { return }
+                await self.translate(job, line: line, apiKey: key, generation: generation)
+                guard generation == self.recordGeneration else { return }
+                self.translationTasks.removeValue(forKey: job.lineID)
                 self.queuedIDs.remove(job.lineID)
+                self.retryingIDs.remove(job.lineID)
+                self.startTranslationWorker()
             }
         }
         refreshStatus()
+    }
+
+    private func translate(_ job: TranslationJob, line: TranscriptLine, apiKey: String?, generation: UUID) async {
+        for attempt in 0..<2 {
+            guard !Task.isCancelled, generation == recordGeneration else { return }
+            let ticket = bindings.begin(lineID: job.lineID)
+            let target: RealtimeTranslationSocket.Target = line.sourceLanguage == .zh ? .fr : .zh
+            let socket = RealtimeTranslationSocket(target: target, backendBaseURL: backendURL,
+                noiseReduction: attempt == 0 ? "far_field" : nil)
+            do {
+                let text = try await socket.translate(audio16k: job.audio, personalAPIKey: apiKey) { [weak self] text in
+                    Task { @MainActor [weak self] in self?.updateTranslation(text, ticket: ticket, final: false) }
+                }
+                guard !Task.isCancelled, generation == recordGeneration else { return }
+                updateTranslation(text, ticket: ticket, final: true)
+                retryAudio.removeValue(forKey: job.lineID)
+                return
+            } catch {
+                guard !Task.isCancelled, generation == recordGeneration else { return }
+                bindings.finish(ticket)
+                // Retry an empty clip once without extra noise reduction; do
+                // not replay completed output or retry authentication errors.
+                if case RealtimeTranslationSocket.SocketError.emptyOutput = error, attempt == 0 {
+                    retryingIDs.insert(job.lineID)
+                    continue
+                }
+                if let index = lines.firstIndex(where: { $0.id == job.lineID }) {
+                    lines[index].translationError = error.localizedDescription
+                }
+                return
+            }
+        }
     }
 
     private func updateTranslation(_ text: String, ticket: TranslationTicket, final: Bool) {
