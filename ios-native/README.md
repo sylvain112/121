@@ -36,7 +36,7 @@ open ZHFRLive.xcodeproj
 
 在 Xcode 中选择开发者 Team 和连接的 iPhone，即可签名运行。
 
-仓库工作流 `.github/workflows/build-ios-unsigned.yml` 在 macOS / Xcode 16.4 上执行回归检查、编译真机 Release App，并生成 `ZHFRLive-unsigned.ipa`。无签名 IPA 可用 Sideloadly / AltStore / SideStore 自行签名安装。
+仓库工作流 `.github/workflows/build-ios-unsigned.yml` 在 macOS / Xcode 26.3 上执行回归检查、编译真机 Release App，并生成 `ZHFRLive-unsigned.ipa`。无签名 IPA 可用 Sideloadly / AltStore / SideStore 自行签名安装。
 
 ## 验证
 
