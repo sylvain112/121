@@ -16,7 +16,8 @@ enum BilingualWhisperConfiguration {
     static func options(language: RecognitionLanguage, clipStart: Double = 0, final: Bool = false) -> DecodingOptions {
         DecodingOptions(task: .transcribe, language: language.code,
             temperatureFallbackCount: 0, sampleLength: 128,
-            usePrefillPrompt: true, detectLanguage: language == .automatic,
+            usePrefillPrompt: true, usePrefillCache: language != .automatic,
+            detectLanguage: language == .automatic,
             // Align words after decoding instead of sampling timestamp tokens.
             // This avoids timestamp-only output while preserving audio slices.
             skipSpecialTokens: true, withoutTimestamps: true, wordTimestamps: true,
@@ -24,7 +25,7 @@ enum BilingualWhisperConfiguration {
             // The SDK's first-token threshold normally triggers a warmer
             // retry. With retries disabled it can stop before producing any
             // text, especially on a short live clip. Decode the bounded pass.
-            suppressTokens: [], firstTokenLogProbThreshold: nil, concurrentWorkerCount: 1)
+            supressTokens: [], firstTokenLogProbThreshold: nil, concurrentWorkerCount: 1)
     }
 }
 
